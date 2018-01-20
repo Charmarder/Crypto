@@ -51,7 +51,7 @@ use Strategy::BuyLowSellHigh;
 # Initial configuration
 #
 # get global configuration from file
-$GO->{CFG} = &Util::Config::get_config({ConfigFile => 'Crypto.conf'});
+$GO->{CFG} = &Util::Config::get_config();
 # init logger
 $log = Util::Logger->init_once({}, $GO->{CFG});
 

@@ -89,59 +89,68 @@ $GO->{ROOT_DIR} = &find_root_dir() unless ($GO->{APP_TYPE}->{CGI});
 
 =item C<get_config($options)>
 
-Arguments: 1
-  options - hashref
-
-The $options may contain the following attributes:
-    ConfigFile	         : Location of configuration file (attribute is mandatory)
-    DefaultConfigSection : The global default section, by default 'Global'
+Arguments: 2
+  file            - Location of configuration file, by default 'global.conf'
+  default_section - The global default section, by default 'Global'
 
 Prepares the Config::Inifiles object infrastructure and return it. 
 
 =cut
-sub get_config ($) {
-    my $options = shift;
+sub get_config ($;$) {
+    my $file = shift || 'global.conf';
+    my $default_section = shift || 'Global';
 
-    my $config_file = $options->{ConfigFile};
-    $config_file = $GO->{ROOT_DIR} . "/conf/" . $config_file if ( $config_file !~ m{^/.*|^\.\.} );
+    $file = $GO->{ROOT_DIR} . "/conf/" . $file if ( $file !~ m{^/.*|^\.\.} );
 
-    die "Script Configuration file $config_file does not exist"	if ( ! -f $config_file );
-    $options->{'ConfigFile'} = $config_file;
+    my $cfg = Config::IniFiles->new('-file' => $file, '-default' => $default_section) || die $!;
 
-    # Config default section
-    my $default_section = $options->{DefaultConfigSection} || 'Global'; 
+    my $local_cfg = $GO->{ROOT_DIR} . "/conf/local.conf";
+    $cfg = Config::IniFiles->new(-file => $local_cfg,  '-default' => $default_section, -import => $cfg) || die $!;
 
-    my $cfg = Config::IniFiles->new('-file' => $config_file, '-default' => $default_section );
-
-    # $options->{RootDir} is mandatory for SubstituteVars
-    $options->{RootDir} ||= $GO->{ROOT_DIR};
-    
-    # Substitute variable names (%var_name%)
-    my $sub_list = $cfg->val($default_section, "SubstituteVars") || undef; 
-    if ( defined($sub_list) ) { 
-        foreach my $sub_var ( split(/\s*,\s*/, $sub_list ) ) { 
-            my $sub_value = ( defined($options->{$sub_var}) ? $options->{$sub_var} : $cfg->val($default_section, $sub_var) );
-            next if ( !defined($sub_value) ); 
-            
-            foreach my $section ( $cfg->Sections ) { 
-                foreach my $varname ( $cfg->Parameters($section) ) { 
-                    my $val = $cfg->val($section, $varname );
-                    if ($val =~ m/\%$sub_var\%/g) {
-                        $val =~ s/\%$sub_var\%/$sub_value/g; 
-                        $cfg->setval($section, $varname, $val);
-                        $log->debug("$section -- $varname: ". $cfg->val($section, $varname) ."\n");
-                    }
-                }
-            }
-
-        }
-    } else { 
-        die "SubstituteVars is not defined in the config"; 
-    }
-
-    $log->info('Configuration was successfully initialized from ' . $config_file);
+    $log->info("Configuration was successfully initialized from $file");
 
     return $cfg;
+}
+
+=item C<get_config_value($option_name, $section_name)>
+
+Arguments: 3
+  option_name  - name of option
+  section_name - name of section, by default 'Global'
+  $substitutes - refhash with substitute variables
+
+Return value of option from specified section of config
+
+=cut
+sub get_config_value ($;$$) {
+    my $option_name  = shift;
+    my $section_name = shift || 'Global';
+    my $substitutes  = shift || {};
+
+    my $option_value = $GO->{CFG}->val($section_name, $option_name);
+
+    # Substitute variable names (%var_name%)
+    my @sub_list = ($option_value =~ m/\%(\w+)\%/g);
+    foreach my $name (@sub_list) {
+        my $sub_value = (defined $substitutes->{$name}) ? $substitutes->{$name} : $GO->{CFG}->val($section_name, $name);
+        if ($sub_value) {
+            $option_value =~ s/\%$name\%/$sub_value/g;
+        } else {
+            die "Substitute variable ($name) is not defined in the config and have not passed to."; 
+        }
+    }
+
+    if ( !defined $option_value ) {
+        # The checking of INITIALIZED is for suppressing warning:
+        # "Log4perl: Seems like no initialization happened. Forgot to call init()?"
+        # Config module is used for initialization of logger. At this point logger is not initialized yet.
+        if (Log::Log4perl->initialized()) {
+            $log->warn("$option_name is not defined in section $section_name in the configuration.");
+        }
+        return;
+    } else {
+        return $option_value;
+    }
 }
 
 =item C<init_error()>
@@ -171,31 +180,6 @@ sub init_error () {
         my $txt = $GO->{SCRIPT_FILENAME} . ": $err: " . $longmess;
         $log->fatal($txt);
     }; 
-}
-
-=item C<get_config_value($option_name, $section_name)>
-
-Arguments: 2
-  option_name  - name of option
-  section_name - name of section, by default 'Global'
-
-Return value of option from specified section of config
-
-=cut
-sub get_config_value ($;$) {
-    my $option_name  = shift;
-    my $section_name = shift || 'Global';
-
-    my $option_value = $GO->{CFG}->val($section_name, $option_name);
-    if ( !defined $option_value ) {
-        # The checking of INITIALIZED is for suppressing warning:
-        # "Log4perl: Seems like no initialization happened. Forgot to call init()?"
-        # Config module is used for initialization of logger. At this point logger is not initialized yet.
-        $log->error("$option_name is not defined in section $section_name in the configuration.") if (Log::Log4perl->initialized());
-        return;
-    } else {
-        return $option_value;
-    }
 }
 
 =item C<find_root_dir()>

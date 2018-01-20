@@ -28,7 +28,6 @@ use Util::Logger qw($log);
 use Log::Log4perl::Level;
 use WWW::Mechanize;
 use Digest::SHA qw(hmac_sha512_hex);
-use Sys::Hostname;
 use JSON;
 use Date::Parse qw(str2time);
 
@@ -53,10 +52,8 @@ sub BUILD {
     $self->{secret} = get_config_value('secret', 'Poloniex');
 
     $self->{mech} = WWW::Mechanize->new();
-    my $host = hostname;
-    if ($host !~ /justhost.com$/) {
-        $self->{mech}->proxy(['ftp', 'http', 'https'] => get_config_value('proxy'));
-    }
+    my $proxy = get_config_value('proxy');
+    $self->{mech}->proxy(['ftp', 'http', 'https'] => $proxy) if ($proxy);
  
     return $self; 
 }
@@ -119,6 +116,7 @@ sub returnTradeHistory () {
             $total->{profit_lost} = $total->{sell_sum} - $total->{buy_sum};
         } else {
             $total->{sell_sum} = 0;
+            $total->{sell_sum_with_fee} = 0;
         }
         
         my $msg = ($total->{profit_lost} > 0) ? 'You have earned' : 'Amount Rest';
@@ -128,9 +126,9 @@ sub returnTradeHistory () {
         if ($total->{profit_lost} < 0) {
             my $take_profit = get_config_value('TakeProfit', $params->{currencyPair});
             my $ROI = get_config_value('ROI');
-            $total->{recomended_price} = sprintf("%.8f", $total->{buy_average} * (1 + $take_profit) );
+            $total->{recomended_price} = $total->{buy_average} * (1 + $take_profit);
             $total->{recomended_sum} = ($total->{buy_sum} - $total->{sell_sum_with_fee}) * (1 + $ROI) / 0.9985;
-            $total->{recomended_amount} = sprintf("%.8f", $total->{recomended_sum} / $total->{recomended_price});
+            $total->{recomended_amount} = $total->{recomended_sum} / $total->{recomended_price};
             printf("Recomended Sell +" . $take_profit * 100 . '%% ROI ' . $ROI * 100 . '%%' .
                 " (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n",
                 $total->{recomended_price}, $total->{recomended_amount}, $total->{recomended_sum});
@@ -153,6 +151,7 @@ sub returnTradeHistory () {
             }
             $self->print_table($header, $data);
            
+            $total->{recomended_amount} = sprintf("%.8f", $total->{recomended_amount});
             if (! grep $_->{type} eq 'sell' && $_->{amount} == $total->{recomended_amount}, @$orders) {
                 # Cancel old sell orders
                 for my $o (grep $_->{type} eq 'sell', @$orders) {
@@ -163,7 +162,7 @@ sub returnTradeHistory () {
                 # Place new sell order
                 my $new_sell_order_params = {
                     currencyPair => $params->{currencyPair},
-                    rate         => $total->{recomended_price},
+                    rate         => sprintf("%.8f", $total->{recomended_price} ),
                     amount       => $total->{recomended_amount},
                     postOnly     => 1,
                 };
@@ -241,7 +240,7 @@ sub returnCompleteBalances () {
         $total_btc += $rs->{$_}->{btcValue};
         push @$data, [
             $_,
-            $rs->{$_}->{available} + $rs->{$_}->{onOrders},
+            sprintf("%.8f", $rs->{$_}->{available} + $rs->{$_}->{onOrders}),
             $rs->{$_}->{onOrders},
             $rs->{$_}->{available},
             $rs->{$_}->{btcValue},
