@@ -114,41 +114,43 @@ sub get_config ($;$) {
 
 =item C<get_config_value($option_name, $section_name)>
 
-Arguments: 3
+Arguments: 4
   option_name  - name of option
   section_name - name of section, by default 'Global'
-  $substitutes - refhash with substitute variables
+  substitutes  - refhash with substitute variables
+  silent       - no any warning
 
 Return value of option from specified section of config
 
 =cut
-sub get_config_value ($;$$) {
+sub get_config_value ($;$$$) {
     my $option_name  = shift;
     my $section_name = shift || 'Global';
     my $substitutes  = shift || {};
+    my $silent       = shift || 0;
 
     my $option_value = $GO->{CFG}->val($section_name, $option_name);
-
-    # Substitute variable names (%var_name%)
-    my @sub_list = ($option_value =~ m/\%(\w+)\%/g);
-    foreach my $name (@sub_list) {
-        my $sub_value = (defined $substitutes->{$name}) ? $substitutes->{$name} : $GO->{CFG}->val($section_name, $name);
-        if ($sub_value) {
-            $option_value =~ s/\%$name\%/$sub_value/g;
-        } else {
-            die "Substitute variable ($name) is not defined in the config and have not passed to."; 
-        }
-    }
 
     if ( !defined $option_value ) {
         # The checking of INITIALIZED is for suppressing warning:
         # "Log4perl: Seems like no initialization happened. Forgot to call init()?"
         # Config module is used for initialization of logger. At this point logger is not initialized yet.
-        if (Log::Log4perl->initialized()) {
+        if (Log::Log4perl->initialized() and !$silent) {
             $log->warn("$option_name is not defined in section $section_name in the configuration.");
         }
         return;
     } else {
+        # Substitute variable names (%var_name%)
+        my @sub_list = ($option_value =~ m/\%(\w+)\%/g);
+        foreach my $name (@sub_list) {
+            my $sub_value = 
+                (defined $substitutes->{$name}) ? $substitutes->{$name} : $GO->{CFG}->val($section_name, $name);
+            if ($sub_value) {
+                $option_value =~ s/\%$name\%/$sub_value/g;
+            } else {
+                die "Substitute variable ($name) is not defined in the config and have not passed to."; 
+            }
+        }
         return $option_value;
     }
 }

@@ -52,7 +52,7 @@ sub BUILD {
     $self->{secret} = get_config_value('secret', 'Poloniex');
 
     $self->{mech} = WWW::Mechanize->new();
-    my $proxy = get_config_value('proxy');
+    my $proxy = get_config_value('proxy', undef, {}, 1);
     $self->{mech}->proxy(['ftp', 'http', 'https'] => $proxy) if ($proxy);
  
     return $self; 
