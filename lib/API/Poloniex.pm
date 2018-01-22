@@ -27,6 +27,7 @@ use Util::Logger qw($log);
 
 use Log::Log4perl::Level;
 use WWW::Mechanize;
+use Time::HiRes qw(time);
 use Digest::SHA qw(hmac_sha512_hex);
 use JSON;
 use Date::Parse qw(str2time);
@@ -390,16 +391,17 @@ sub poloniex_trading_api ($$;$) {
 
     my $data = {
         command => $method,
-        nonce   => time, 
+        nonce   => time =~ s/\.//r,
         %$params,
     };
-    my $d = join '&', map {"$_=$data->{$_}"} keys %$data;
-    $log->debug("$url?$d");
+    my $data_string = join '&', map {"$_=$data->{$_}"} keys %$data;
+    $log->debug("$url?$data_string");
 
-    my $signature = hmac_sha512_hex($d, $self->{secret});
+    my $signature = hmac_sha512_hex($data_string, $self->{secret});
     $mech->add_header(
+		'Content-Type' => 'application/x-www-form-urlencoded',
         'Key'          => $self->{key},
-        'Sign'         => $signature
+        'Sign'         => $signature,
     );
 #    $log->debug($signature);
 
