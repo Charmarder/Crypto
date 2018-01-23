@@ -52,7 +52,7 @@ sub BUILD {
     $self->{key} = get_config_value('key', 'Poloniex');
     $self->{secret} = get_config_value('secret', 'Poloniex');
 
-    $self->{mech} = WWW::Mechanize->new();
+    $self->{mech} = WWW::Mechanize->new(autocheck => 0);
     my $proxy = get_config_value('proxy', undef, {}, 1);
     $self->{mech}->proxy(['ftp', 'http', 'https'] => $proxy) if ($proxy);
  
@@ -341,7 +341,8 @@ sub poloniex_public_api ($$;$) {
 
     my $res = $mech->get($url);
     unless ($res->is_success) {
-        die Dumper($mech->status());
+        my $r = from_json($mech->text);
+        $log->logdie('ERROR: HTTP Code: ' . $mech->status() . ": $r->{error}");
     } else {
         return from_json($mech->text());
     }
@@ -391,7 +392,7 @@ sub poloniex_trading_api ($$;$) {
 
     my $data = {
         command => $method,
-        nonce   => time =~ s/\.//r,
+        nonce   => time * 100000,
         %$params,
     };
     my $data_string = join '&', map {"$_=$data->{$_}"} keys %$data;
@@ -407,7 +408,8 @@ sub poloniex_trading_api ($$;$) {
 
     my $res = $mech->post($url, $data);
     unless ($res->is_success) {
-        die Dumper($mech->status());
+        my $r = from_json($mech->text);
+        $log->logdie('ERROR: HTTP Code: ' . $mech->status() . ": $r->{error}");
     } else {
         return from_json($mech->text());
     }
