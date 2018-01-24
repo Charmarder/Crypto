@@ -33,11 +33,9 @@ use JSON;
 use Date::Parse qw(str2time);
 
 
-
 has 'mech'        => (is => 'rw', isa => 'Str');
 
 has 'public_url'  => (is => 'rw', isa => 'Str');
-
 has 'trading_url' => (is => 'rw', isa => 'Str');
 has 'key'         => (is => 'rw', isa => 'Str');
 has 'secret'      => (is => 'rw', isa => 'Str');
@@ -65,141 +63,25 @@ sub BUILD {
 # format; if you do not specify a range, it will be limited to one day. You may optionally limit
 # the number of entries returned using the "limit" parameter, up to a maximum of 10,000. If the 
 # "limit" parameter is not specified, no more than 500 entries will be returned.
-sub returnTradeHistory () {
+sub getTradeHistory ($) {
     my $self = shift;
     my $options = shift;
 
     my $params;
-    if ($options->{start}) {
+    if ($options->{'currency-pair'}) {
+        $params->{start} = str2time(get_config_value($options->{'currency-pair'}, 'Poloniex'), 'GMT');
+    } elsif ($options->{start}) {
         $params->{start} = str2time($options->{start}, 'GMT');
-    } elsif ($options->{currencyPair}) {
-        $params->{start} = str2time(get_config_value($options->{currencyPair}, 'Poloniex'), 'GMT');
-    }
+	}
     $params->{end} = str2time($options->{end}, 'GMT') if $options->{end};
-    $params->{currencyPair} = $options->{currencyPair} ? $options->{currencyPair} : 'all';
-    my $rs = $self->poloniex_trading_api('returnTradeHistory', $params);
+    $params->{currencyPair} = $options->{'currency-pair'} ? $options->{'currency-pair'} : 'all';
 
-    my @transactions; 
-    if ($params->{currencyPair} eq 'all') {
-        foreach my $market (keys %$rs) {
-            push @transactions, map { $_->{market} = $market; $_  } @{ $rs->{$market} };
-        }
-    } else {
-        push @transactions, map { $_->{market} = $params->{currencyPair}; $_  } @$rs;
-
-        # Calculate Average Buy Price, Total Amount and Toral Sum
-        my $total;
-        map {
-            $total->{buy_amount} += $_->{amount} * (1 - $_->{fee});
-            $total->{buy_sum} += $_->{amount} * $_->{rate};
-        } grep $_->{type} eq 'buy', @transactions;
-        if ($total->{buy_sum}) {
-            $total->{buy_average} = $total->{buy_sum} / $total->{buy_amount};
-            printf("Total Buy (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n", 
-                $total->{buy_average}, $total->{buy_amount}, $total->{buy_sum});
-            # Amount rest, Profit/Lost
-            $total->{amount_rest} = $total->{buy_amount};
-            $total->{profit_lost} = -$total->{buy_sum};
-        }
-
-        # Calculate Average Sell Price, Total Amount and Toral Sum
-        map {
-            $total->{sell_amount} += $_->{amount};
-            $total->{sell_sum} += $_->{amount} * $_->{rate} * (1 - $_->{fee});
-            $total->{sell_sum_with_fee} += $_->{amount} * $_->{rate};
-        } grep $_->{type} eq 'sell', @transactions;
-        if ($total->{sell_sum}) {
-            $total->{sell_average} = $total->{sell_sum} / $total->{sell_amount};
-            printf("Total Sell (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n",
-                $total->{sell_average}, $total->{sell_amount}, $total->{sell_sum_with_fee});
-            # Amount rest, Profit/Lost
-            $total->{amount_rest} = $total->{buy_amount} - $total->{sell_amount};
-            $total->{profit_lost} = $total->{sell_sum} - $total->{buy_sum};
-        } else {
-            $total->{sell_sum} = 0;
-            $total->{sell_sum_with_fee} = 0;
-        }
-        
-        my $msg = ($total->{profit_lost} > 0) ? 'You have earned' : 'Amount Rest';
-        printf("$msg:\t%.8f\tProfit/Lost:\t%.8f\n\n", $total->{amount_rest}, $total->{profit_lost});
-
-        # Recomended Sell Price, Amount and Sum
-        if ($total->{profit_lost} < 0) {
-            my $take_profit = get_config_value('TakeProfit', $params->{currencyPair});
-            my $ROI = get_config_value('ROI');
-            $total->{recomended_price} = $total->{buy_average} * (1 + $take_profit);
-            $total->{recomended_sum} = ($total->{buy_sum} - $total->{sell_sum_with_fee}) * (1 + $ROI) / 0.9985;
-            $total->{recomended_amount} = $total->{recomended_sum} / $total->{recomended_price};
-            printf("Recomended Sell +" . $take_profit * 100 . '%% ROI ' . $ROI * 100 . '%%' .
-                " (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n",
-                $total->{recomended_price}, $total->{recomended_amount}, $total->{recomended_sum});
-            printf("Amount will be earned:\t%.8f\n\n", $total->{amount_rest} - $total->{recomended_amount});
-
-            # Get open order for currentPair
-            my $orders = $self->poloniex_trading_api( 'returnOpenOrders', { currencyPair => $params->{currencyPair} } );
-            my $header = ['OrderNumber', 'Type', 'Price', 'Amount', 'StartingAmount', 'Total', 'Date'];
-            my $data;
-            foreach ( @$orders ) {
-                push @$data, [
-                    $_->{orderNumber},
-                    $_->{type},
-                    $_->{rate},
-                    $_->{amount},
-                    $_->{startingAmount},
-                    $_->{total},
-                    $_->{date},
-                ];
-            }
-#            $self->print_table($header, $data);
-           
-            $total->{recomended_amount} = sprintf("%.8f", $total->{recomended_amount});
-            if (! grep $_->{type} eq 'sell' && $_->{amount} == $total->{recomended_amount}, @$orders) {
-                # Cancel old sell orders
-                for my $o (grep $_->{type} eq 'sell', @$orders) {
-                    $rs = $self->poloniex_trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
-                    $log->info(Dumper $rs) if $rs;
-                }
-
-                # Place new sell order
-                my $new_sell_order_params = {
-                    currencyPair => $params->{currencyPair},
-                    rate         => sprintf("%.8f", $total->{recomended_price} ),
-                    amount       => $total->{recomended_amount},
-                    postOnly     => 1,
-                };
-                $log->info("New Sell order parameters: " . Dumper $new_sell_order_params);
-                $rs = $self->poloniex_trading_api('sell', $new_sell_order_params);
-                $log->info(Dumper $rs) if $rs;
-            } else {
-                $log->debug('Nothing to do, sell order already exist.');
-            }
-        }
-    }
-    @transactions = sort {$a->{date} cmp $b->{date}} @transactions;
-
-    my $header = 
-      ['OrderNumber', 'Market', 'Type', 'Price', 'Amount', 'Fee', 'Total', 'Date', 'TradeID', 'GlobalTradeID'];
-    my $data;
-    foreach (@transactions) {
-            push @$data, [
-                $_->{orderNumber},
-                $_->{market},
-                $_->{type},
-                $_->{rate},
-                $_->{amount},
-                $_->{fee},
-                $_->{total},
-                $_->{date},
-                $_->{tradeID},
-                $_->{globalTradeID},
-            ];
-    }
-#    $self->print_table($header, $data);
+	return $self->poloniex_trading_api('returnTradeHistory', $params);
 }
 
 # Returns your open orders for a given market, specified by the "currencyPair" POST parameter, e.g.
 # "BTC_XCP". Set "currencyPair" to "all" to return open orders for all markets.
-sub returnOpenOrders () {
+sub getOpenOrders () {
     my $self = shift;
 
     my $rs = $self->poloniex_trading_api('returnOpenOrders', {currencyPair => 'all'});
@@ -222,7 +104,8 @@ sub returnOpenOrders () {
         }
         push @$data, $group;
     }
-#    $self->print_table($header, $data);
+
+    return ($header, $data);
 }
 
 # Returns all of your balances, including available balance, balance on orders, and the estimated 

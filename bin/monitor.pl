@@ -1,5 +1,5 @@
-#!/usr/bin/env perl -w
-##!/usr/bin/perl -w
+#!/usr/bin/perl -w
+##!/usr/bin/env perl -w
 #===============================================================================
 #
 #         FILE: monitor.pl
@@ -74,15 +74,15 @@ $GO->{SCRIPT} = {
         },
         'exchange|e=s' => {
             info      => 'Name of exchange',
-            default   => 'Poloniex',
-            pattern   => '/^Poloniex$/',
+            default   => 'poloniex',
+            pattern   => '/^poloniex$/',
         },
         'command|c=s' => {
             info      => 'Name of command',
             mandatory => 1,
-            default   => 'getBalances',
+            default   => 'balances',
         },
-        'currencyPair=s' => {
+        'currency-pair=s' => {
             info      => 'Currency pair',
         },
         'start=s' => {
@@ -91,7 +91,7 @@ $GO->{SCRIPT} = {
         'end=s' => {
             info      => 'End date',
         },
-        'startPrice=s' => {
+        'start-price=s' => {
             info      => 'Start Price',
         },
         'run' => {
@@ -100,11 +100,11 @@ $GO->{SCRIPT} = {
         },
     },
     examples    => [
-        "$Script --Exchange Poloniex --Command getBalances",
-        "$Script --Exchange Poloniex --Command returnOpenOrders",
-        "$Script --Exchange Poloniex --Command returnTradeHistory",
-        "$Script --Exchange Poloniex --Command returnTradeHistory --CurrencyPair BTC_BCN --Start '2018-01-09'",
-        "$Script --Exchange Poloniex --Command calculateOrderList",
+        "$Script -e poloniex -c balances",
+        "$Script -e poloniex -c orders",
+        "$Script -e poloniex -c history",
+        "$Script -e poloniex -c history -cur BTC_BCN --start '2018-01-09'",
+        "$Script -e poloniex -c list",
     ],
 };
 
@@ -114,29 +114,29 @@ $GO->{SCRIPT} = {
 ###############################################################################
 my $options = Util::Config::get_options($GO->{SCRIPT});
 
-$options->{currencyPair} =~ s/(\w+)\/(\w+)/$2_$1/ if ($options->{currencyPair});
+$options->{'currency-pair'} =~ s/(\w+)\/(\w+)/$2_$1/ if ($options->{'currency-pair'});
 
 $log->level($DEBUG) if ($options->{debug});
 $log->debug("$Script called. Options are:\n" . Dumper($options));
 
-# Dispatching
 my $exchange;
-if ($options->{exchange} eq 'Poloniex') {
+if ($options->{exchange} eq 'poloniex') {
     $exchange = API::Poloniex->new();
 } else {
     die("Unsupported exchange\n");
 }
 
+# Dispatching
 my $strategy = Strategy::BuyLowSellHigh->new();
-if ($options->{command} eq 'getBalances') {
+if ($options->{command} eq 'balances') {
     $strategy->getBalances($exchange);
-} elsif ($options->{command} eq 'returnOpenOrders') {
-    $exchange->returnOpenOrders();
-} elsif ($options->{command} eq 'returnTradeHistory') {
-    $exchange->returnTradeHistory($options);
-} elsif ($options->{command} eq 'calculateOrderList') {
-    Util::Config::usage('Start Price must be defined') if (!$options->{startPrice});
-    $strategy->calculateOrderList($options->{startPrice});
+} elsif ($options->{command} eq 'orders') {
+    $strategy->getOpenOrders($exchange);
+} elsif ($options->{command} eq 'history') {
+    $strategy->getTradeHistory($exchange, $options);
+} elsif ($options->{command} eq 'list') {
+    Util::Config::usage('Start Price must be defined') if (!$options->{'start-price'});
+    $strategy->calculateOrderList($options->{'start-price'});
 } else {
     die("Unsupported command\n");
 }
