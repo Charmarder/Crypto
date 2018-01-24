@@ -150,7 +150,7 @@ sub returnTradeHistory () {
                     $_->{date},
                 ];
             }
-            $self->print_table($header, $data);
+#            $self->print_table($header, $data);
            
             $total->{recomended_amount} = sprintf("%.8f", $total->{recomended_amount});
             if (! grep $_->{type} eq 'sell' && $_->{amount} == $total->{recomended_amount}, @$orders) {
@@ -194,7 +194,7 @@ sub returnTradeHistory () {
                 $_->{globalTradeID},
             ];
     }
-    $self->print_table($header, $data);
+#    $self->print_table($header, $data);
 }
 
 # Returns your open orders for a given market, specified by the "currencyPair" POST parameter, e.g.
@@ -222,29 +222,31 @@ sub returnOpenOrders () {
         }
         push @$data, $group;
     }
-    $self->print_table($header, $data);
+#    $self->print_table($header, $data);
 }
 
 # Returns all of your balances, including available balance, balance on orders, and the estimated 
 # BTC value of your balance. By default, this call is limited to your exchange account; set the 
 # "account" POST parameter to "all" to include your margin and lending accounts.
-sub returnCompleteBalances () {
+sub getBalances () {
     my $self = shift;
 
     my $rs = $self->poloniex_trading_api('returnCompleteBalances');
     my @coins = grep $rs->{$_}->{btcValue} > 0, sort keys %$rs;
 
-    my $header = ['Coin', 'Total', 'On Orders', 'Available', 'BTC Value'];
+    my $total_btc = 0;
+    map {$total_btc += $rs->{$_}->{btcValue}} keys %$rs;
+
+    my $header = ['Coin', 'Total', 'On Orders', 'Available', 'BTC Value', 'Weight'];
     my $data;
-    my $total_btc;
     foreach (@coins) {
-        $total_btc += $rs->{$_}->{btcValue};
         push @$data, [
             $_,
             sprintf("%.8f", $rs->{$_}->{available} + $rs->{$_}->{onOrders}),
             $rs->{$_}->{onOrders},
             $rs->{$_}->{available},
             $rs->{$_}->{btcValue},
+            sprintf("%.2f%%", $rs->{$_}->{btcValue}/$total_btc*100),
         ];
     }
 
@@ -252,56 +254,7 @@ sub returnCompleteBalances () {
     my $btcusd = from_json($self->{mech}->text())->{USD};
     my $total = sprintf("Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $total_btc, $total_btc);
 
-    $self->print_table($header, $data, $total);
-}
-
-
-###############################################################################
-# Helper functions
-###############################################################################
-
-# Print data to console as table
-sub print_table ($$;$) {
-    my $self   = shift;
-    my $header = shift;
-    my $data   = shift;
-    my $total  = shift;
-
-    # calculate lengths of columns
-    my $lengths = [ map { length $_ } @$header ];
-
-    my $rows = (ref $data->[0] eq 'HASH') ? [ map { @{ $_->{data} } } @$data ] : $data;
-    foreach my $row (@$rows) {
-        for (my $i = 0; $i < @$row; $i++) {
-            my $l = length $row->[$i];
-            $lengths->[$i] = $l if ($lengths->[$i] < $l);
-        }
-    }
-    $log->debug(Dumper $lengths);
-
-    # calculate table width (2 spaces bitween columns)
-    my $width += 2 * (@$lengths - 1);
-    $width += $_ for @$lengths;
-    $log->debug(Dumper $width);
-
-    # compose format strings for sprintf()
-    my $format = {
-        header => join( '  ', map { '%-' . $_ . 's' } @$lengths ),
-        body   => join( '  ', map { '%' . $_ . 's' } @$lengths ),
-    };
-    $format->{body} =~ s/^(\%)/$1-/;
-    $log->debug(Dumper $format);
-
-    # print table(s) content
-    my $groups = (ref $data->[0] eq 'HASH') ? $data : [ {name => '...', data => $data} ];
-    for my $group (@$groups) {
-        print "$group->{name}\n" if ($group->{name} ne '...');
-        printf('-' x $width . "\n" . "$format->{header}\n" . '-' x $width . "\n", @$header);
-        printf("$format->{body}\n", @$_) for (@{ $group->{data} });
-        print '-' x $width . "\n\n";
-    }
-
-    print "$total\n" if ($total);
+    return ($header, $data, $total);
 }
 
 

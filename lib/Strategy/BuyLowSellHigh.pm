@@ -56,5 +56,62 @@ sub calculateOrderList ($;$) {
 
 }
 
+sub getBalances ($) {
+    my $self = shift;
+    my $exchange = shift;
+
+    my ($header, $data, $total) = $exchange->getBalances();
+    
+    $self->print_table($header, $data, $total);
+}
+
+###############################################################################
+# Helper functions
+###############################################################################
+
+# Print data to console as table
+sub print_table ($$;$) {
+    my $self   = shift;
+    my $header = shift;
+    my $data   = shift;
+    my $total  = shift;
+
+    # calculate lengths of columns
+    my $lengths = [ map { length $_ } @$header ];
+
+    my $rows = (ref $data->[0] eq 'HASH') ? [ map { @{ $_->{data} } } @$data ] : $data;
+    foreach my $row (@$rows) {
+        for (my $i = 0; $i < @$row; $i++) {
+            my $l = length $row->[$i];
+            $lengths->[$i] = $l if ($lengths->[$i] < $l);
+        }
+    }
+    $log->debug(Dumper $lengths);
+
+    # calculate table width (2 spaces bitween columns)
+    my $width += 2 * (@$lengths - 1);
+    $width += $_ for @$lengths;
+    $log->debug(Dumper $width);
+
+    # compose format strings for sprintf()
+    my $format = {
+        header => join( '  ', map { '%-' . $_ . 's' } @$lengths ),
+        body   => join( '  ', map { '%' . $_ . 's' } @$lengths ),
+    };
+    $format->{body} =~ s/^(\%)/$1-/;
+    $log->debug(Dumper $format);
+
+    # print table(s) content
+    my $groups = (ref $data->[0] eq 'HASH') ? $data : [ {name => '...', data => $data} ];
+    for my $group (@$groups) {
+        print "$group->{name}\n" if ($group->{name} ne '...');
+        printf('-' x $width . "\n" . "$format->{header}\n" . '-' x $width . "\n", @$header);
+        printf("$format->{body}\n", @$_) for (@{ $group->{data} });
+        print '-' x $width . "\n\n";
+    }
+
+    print "$total\n" if ($total);
+}
+
 1;
 

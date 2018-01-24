@@ -80,7 +80,7 @@ $GO->{SCRIPT} = {
         'command|c=s' => {
             info      => 'Name of command',
             mandatory => 1,
-            default   => 'returnCompleteBalances',
+            default   => 'getBalances',
         },
         'currencyPair=s' => {
             info      => 'Currency pair',
@@ -100,7 +100,7 @@ $GO->{SCRIPT} = {
         },
     },
     examples    => [
-        "$Script --Exchange Poloniex --Command returnCompleteBalances",
+        "$Script --Exchange Poloniex --Command getBalances",
         "$Script --Exchange Poloniex --Command returnOpenOrders",
         "$Script --Exchange Poloniex --Command returnTradeHistory",
         "$Script --Exchange Poloniex --Command returnTradeHistory --CurrencyPair BTC_BCN --Start '2018-01-09'",
@@ -120,24 +120,25 @@ $log->level($DEBUG) if ($options->{debug});
 $log->debug("$Script called. Options are:\n" . Dumper($options));
 
 # Dispatching
+my $exchange;
 if ($options->{exchange} eq 'Poloniex') {
-    my $poloniex = API::Poloniex->new();
-    my $strategy = Strategy::BuyLowSellHigh->new();
-
-    if ($options->{command} eq 'returnCompleteBalances') {
-        $poloniex->returnCompleteBalances();
-    } elsif ($options->{command} eq 'returnOpenOrders') {
-        $poloniex->returnOpenOrders();
-    } elsif ($options->{command} eq 'returnTradeHistory') {
-        $poloniex->returnTradeHistory($options);
-    } elsif ($options->{command} eq 'calculateOrderList') {
-        Util::Config::usage('Start Price must be defined') if (!$options->{startPrice});
-        $strategy->calculateOrderList($options->{startPrice});
-    } else {
-        die("Unsupported command\n");
-    }
+    $exchange = API::Poloniex->new();
 } else {
     die("Unsupported exchange\n");
+}
+
+my $strategy = Strategy::BuyLowSellHigh->new();
+if ($options->{command} eq 'getBalances') {
+    $strategy->getBalances($exchange);
+} elsif ($options->{command} eq 'returnOpenOrders') {
+    $exchange->returnOpenOrders();
+} elsif ($options->{command} eq 'returnTradeHistory') {
+    $exchange->returnTradeHistory($options);
+} elsif ($options->{command} eq 'calculateOrderList') {
+    Util::Config::usage('Start Price must be defined') if (!$options->{startPrice});
+    $strategy->calculateOrderList($options->{startPrice});
+} else {
+    die("Unsupported command\n");
 }
 
 ###############################################################################
