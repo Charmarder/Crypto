@@ -118,7 +118,7 @@ Arguments: 4
   option_name  - name of option
   section_name - name of section, by default 'Global'
   substitutes  - refhash with substitute variables
-  silent       - no any warning
+  mode         - 0 - silent, 1 - die, 2 - warn
 
 Return value of option from specified section of config
 
@@ -126,8 +126,8 @@ Return value of option from specified section of config
 sub get_config_value ($;$$$) {
     my $option_name  = shift;
     my $section_name = shift || 'Global';
+    my $mode         = (defined $_[0]) ? shift : 2;
     my $substitutes  = shift || {};
-    my $silent       = shift || 0;
 
     my $option_value = $GO->{CFG}->val($section_name, $option_name);
 
@@ -135,8 +135,12 @@ sub get_config_value ($;$$$) {
         # The checking of INITIALIZED is for suppressing warning:
         # "Log4perl: Seems like no initialization happened. Forgot to call init()?"
         # Config module is used for initialization of logger. At this point logger is not initialized yet.
-        if (Log::Log4perl->initialized() and !$silent) {
-            $log->warn("$option_name is not defined in section $section_name in the configuration.");
+        if (Log::Log4perl->initialized() ) {
+            if ($mode == 1) {
+                $log->logdie("$option_name is not defined in section $section_name in the configuration.");
+            } elsif ($mode == 2) {
+                $log->warn("$option_name is not defined in section $section_name in the configuration.");
+            }
         }
         return;
     } else {

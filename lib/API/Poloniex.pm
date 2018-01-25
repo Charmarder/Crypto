@@ -51,7 +51,7 @@ sub BUILD {
     $self->{secret} = get_config_value('secret', 'Poloniex');
 
     $self->{mech} = WWW::Mechanize->new(autocheck => 0);
-    my $proxy = get_config_value('proxy', undef, {}, 1);
+    my $proxy = get_config_value('proxy', undef, 0);
     $self->{mech}->proxy(['ftp', 'http', 'https'] => $proxy) if ($proxy);
  
     return $self; 
@@ -68,15 +68,20 @@ sub getTradeHistory ($) {
     my $options = shift;
 
     my $params;
-    if ($options->{'currency-pair'}) {
-        $params->{start} = str2time(get_config_value($options->{'currency-pair'}, 'Poloniex'), 'GMT');
+    if ($options->{market}) {
+        $params->{start} = str2time(get_config_value($options->{market}, 'Poloniex'), 'GMT');
     } elsif ($options->{start}) {
         $params->{start} = str2time($options->{start}, 'GMT');
 	}
     $params->{end} = str2time($options->{end}, 'GMT') if $options->{end};
-    $params->{currencyPair} = $options->{'currency-pair'} ? $options->{'currency-pair'} : 'all';
+    $params->{currencyPair} = $options->{market} ? $options->{market} : 'all';
 
-	return $self->poloniex_trading_api('returnTradeHistory', $params);
+    my $rs = $self->poloniex_trading_api('returnTradeHistory', $params);
+    if ($options->{market}) {
+    	return {$options->{market} => $rs};
+    } else {
+    	return $rs;
+    }
 }
 
 # Returns your open orders for a given market, specified by the "currencyPair" POST parameter, e.g.
@@ -85,27 +90,8 @@ sub getOpenOrders () {
     my $self = shift;
 
     my $rs = $self->poloniex_trading_api('returnOpenOrders', {currencyPair => 'all'});
-    my @markets = grep scalar @{ $rs->{$_} }, sort keys %$rs;
-    
-    my $header = ['OrderNumber', 'Type', 'Price', 'Amount', 'StartingAmount', 'Total', 'Date'];
-    my $data;
-    foreach my $market (@markets) {
-        my $group = {name => $market};  #TODO add current price
-        foreach ( @{ $rs->{$market} } ) {
-            push @{ $group->{data} }, [
-                $_->{orderNumber},
-                $_->{type},
-                $_->{rate},
-                $_->{amount},
-                $_->{startingAmount},
-                $_->{total},
-                $_->{date},
-            ];
-        }
-        push @$data, $group;
-    }
 
-    return ($header, $data);
+    return $rs;
 }
 
 # Returns all of your balances, including available balance, balance on orders, and the estimated 

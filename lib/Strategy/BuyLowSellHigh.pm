@@ -58,11 +58,11 @@ sub calculateOrderList ($;$) {
 
 
 # Calculate Buy/Sell Average Price, Total Amount and Toral Sum, as well Amount Rest and Profit/Lost
-sub calculateTotal {
+sub getAnalysis {
     my $self         = shift;
     my $transactions = shift;
 
-    my $total = {
+    my $analysis = {
         buy => {
             price  => 0,
             amount => 0,
@@ -76,123 +76,174 @@ sub calculateTotal {
         },
         amount_rest => 0,
         profit_lost => 0,
+        can_trade   => 0,
+        new_sell    => {},
+        new_buy     => {},
     };
 
     foreach (@$transactions) {
         if ($_->{type} eq 'buy') {
-            $total->{buy}->{amount} += $_->{amount} * (1 - $_->{fee});
-            $total->{buy}->{sum} += $_->{amount} * $_->{rate};
+            $analysis->{buy}->{amount} += $_->{amount} * (1 - $_->{fee});
+            $analysis->{buy}->{sum} += $_->{amount} * $_->{rate};
         } elsif ($_->{type} eq 'sell') {
-            $total->{sell}->{amount} += $_->{amount};
-            $total->{sell}->{sum} += $_->{amount} * $_->{rate} * (1 - $_->{fee});
-            $total->{sell}->{sum_with_fee} += $_->{amount} * $_->{rate};
+            $analysis->{sell}->{amount} += $_->{amount};
+            $analysis->{sell}->{sum} += $_->{amount} * $_->{rate} * (1 - $_->{fee});
+            $analysis->{sell}->{sum_with_fee} += $_->{amount} * $_->{rate};
         }
     }
 
-    if ($total->{buy}->{sum}) {
-        $total->{buy}->{price} = $total->{buy}->{sum} / $total->{buy}->{amount};
+    if ($analysis->{buy}->{sum}) {
+        $analysis->{buy}->{price} = $analysis->{buy}->{sum} / $analysis->{buy}->{amount};
     }
-    if ($total->{sell}->{sum}) {
-        $total->{sell}->{price} = $total->{sell}->{sum} / $total->{sell}->{amount};
+    if ($analysis->{sell}->{sum}) {
+        $analysis->{sell}->{price} = $analysis->{sell}->{sum} / $analysis->{sell}->{amount};
     }
-    $total->{amount_rest} = $total->{buy}->{amount} - $total->{sell}->{amount};
-    $total->{profit_lost} = $total->{sell}->{sum} - $total->{buy}->{sum};
+    $analysis->{amount_rest} = $analysis->{buy}->{amount} - $analysis->{sell}->{amount};
+    $analysis->{profit_lost} = $analysis->{sell}->{sum} - $analysis->{buy}->{sum};
 
-    return $total;
+    return $analysis;
 }
 
 # Return parameters for new sell order
 sub calculateSell {
-    my $self          = shift;
-    my $currency_pair = shift;
-    my $buy_price     = shift;
-    my $buy_sum       = shift;
-    my $sell_sum      = shift;
+    my $self      = shift;
+    my $market    = shift;
+    my $buy_price = shift;
+    my $buy_sum   = shift;
+    my $sell_sum  = shift;
 
     my $new_sell;
 
-    my $take_profit = get_config_value('TakeProfit', $currency_pair);
+    my $take_profit = get_config_value('TakeProfit', $market);
     my $ROI = get_config_value('ROI');
 
     $new_sell->{price} = $buy_price * (1 + $take_profit);
     $new_sell->{sum} = ($buy_sum * (1 + $ROI) - $sell_sum)  / 0.9985;
     $new_sell->{amount} = $new_sell->{sum} / $new_sell->{price};
+    $new_sell->{take_profit} = $take_profit;
+    $new_sell->{ROI} = $ROI;
 
     return $new_sell;
 }
 
-# Get trade history
-sub getTradeHistory ($;$) {
+# Return parameters for new sell order
+sub calculateBuy {
+    my $self          = shift;
+    my $market        = shift;
+    my $trans         = shift;
+    my $market_orders = shift;
+    my $analysis      = shift;
+
+    my $new_buy;
+
+    # find stat price and start amount
+    my $first_order = [sort {$a->{date} cmp $b->{date}} @$trans]->[0];
+    my $last_order  = [sort {$b->{date} cmp $a->{date}} @$trans]->[0];
+    $log->error(Dumper $first_order);
+    $log->error(Dumper $last_order);
+
+    return $new_buy;
+}
+
+# Analysis and trade
+sub trade ($;$) {
     my $self     = shift;
     my $exchange = shift;
     my $options  = shift;
 
+    my $transactions = $exchange->getTradeHistory($options);
+    my $orders       = $exchange->getOpenOrders();
 
-    my $rs = $exchange->getTradeHistory($options);
-
-    my @transactions; 
-    if (! defined $options->{'currency-pair'}) {
-        foreach my $market (keys %$rs) {
-            push @transactions, map { $_->{market} = $market; $_  } @{ $rs->{$market} };
-        }
+    my @markets;
+    if ($options->{market}) {
+        @markets = $options->{market};
     } else {
-        my $currency_pair = $options->{'currency-pair'};
+        @markets = grep scalar @{ $orders->{$_} }, sort keys %$orders;
+    }
 
-        push @transactions, map { $_->{market} = $currency_pair; $_  } @$rs;
+    foreach my $market (@markets) {
+        print '-' x length($market) . "\n$market\n" . '-' x length($market) . "\n";
 
-        my $total = $self->calculateTotal(\@transactions);
+        my $start_date = get_config_value($market, 'Poloniex');
+        my @trans = grep $_->{date} ge $start_date, map { $_->{market} = $market; $_  } @{ $transactions->{$market} };
 
-        if ($total->{buy}->{sum}) {
-            printf("Total Buy (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n", 
-                $total->{buy}->{price}, $total->{buy}->{amount}, $total->{buy}->{sum});
-        }
-        if ($total->{sell}->{sum}) {
-            printf("Total Sell (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n",
-                $total->{sell}->{price}, $total->{sell}->{amount}, $total->{sell}->{sum_with_fee});
-        }
-        
-        my $msg = ($total->{profit_lost} > 0) ? 'You have earned' : 'Amount Rest';
-        printf("$msg:\t%.8f\tProfit/Lost:\t%.8f\n\n", $total->{amount_rest}, $total->{profit_lost});
+        my $analysis = $self->getAnalysis(\@trans);
 
-        # Recomended Sell Price, Amount and Sum
-        if ($total->{profit_lost} < 0) {
-            my $take_profit = get_config_value('TakeProfit', $currency_pair);
-            my $ROI = get_config_value('ROI');
-            my $new_sell = $self->calculateSell($currency_pair, $total->{buy}->{price}, $total->{buy}->{sum}, $total->{sell}->{sum});
+        my $new_sell;
+        if ($analysis->{profit_lost} < 0) {
+            # Get parameters for new sell order (Price, Amount and Sum)
+            $new_sell = $self->calculateSell($market, 
+                $analysis->{buy}->{price}, $analysis->{buy}->{sum}, $analysis->{sell}->{sum});
 
-            printf("Recomended Sell +" . $take_profit * 100 . '%% ROI ' . $ROI * 100 . '%%' .
-                " (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n",
-                $new_sell->{price}, $new_sell->{amount}, $new_sell->{sum});
-            printf("Amount will be earned:\t%.8f\n\n", $total->{amount_rest} - $new_sell->{amount});
+            # Step 1: Cancel old sell order if exist and create new one if not exist
+            my $market_orders = $orders->{$market};
+            my $new_sell_amount = sprintf("%.8f", $new_sell->{amount});
+            if (! grep $_->{type} eq 'sell' && $_->{amount} == $new_sell_amount, @$market_orders) {
+                # Be sure that there is no more then one sell order
+                my @sell_orders = grep $_->{type} eq 'sell', @$market_orders;
+                if (@sell_orders > 1) {
+                    $log->warn('Cannot do anythig, there are more then one sell orders.');
+                } else {
+                    if (@sell_orders) {
+                        # Cancel old sell order
+                        my $o = $sell_orders[0];
+                        $log->info("Cancel old Sell order $o->{orderNumber}");
+                        my $rs = $exchange->poloniex_trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
+                        $log->info(Dumper $rs) if $rs;
+                    }
 
-            # Get open orders for currentPair
-            my $orders = $exchange->poloniex_trading_api( 'returnOpenOrders', { currencyPair => $currency_pair } );
-
-            $new_sell->{amount} = sprintf("%.8f", $new_sell->{amount});
-            if (! grep $_->{type} eq 'sell' && $_->{amount} == $new_sell->{amount}, @$orders) {
-                # Cancel old sell orders
-                for my $o (grep $_->{type} eq 'sell', @$orders) {
-                    $rs = $exchange->poloniex_trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
+                    # Place new sell order
+                    my $new_sell_order_params = {
+                        currencyPair => $market,
+                        rate         => sprintf("%.8f", $new_sell->{price} ),
+                        amount       => $new_sell_amount,
+                        postOnly     => 1,
+                    };
+                    $log->info("Create new Sell order: " . Dumper $new_sell_order_params);
+                    my $rs = $exchange->poloniex_trading_api('sell', $new_sell_order_params);
                     $log->info(Dumper $rs) if $rs;
                 }
-
-                # Place new sell order
-                my $new_sell_order_params = {
-                    currencyPair => $currency_pair,
-                    rate         => sprintf("%.8f", $new_sell->{price} ),
-                    amount       => $new_sell->{amount},
-                    postOnly     => 1,
-                };
-                $log->info("New Sell order parameters: " . Dumper $new_sell_order_params);
-                $rs = $exchange->poloniex_trading_api('sell', $new_sell_order_params);
-                $log->info(Dumper $rs) if $rs;
             } else {
-                $log->debug('Nothing to do, sell order already exist.');
+                $log->debug("Nothing to do, sell order with amount $new_sell_amount already exist.");
+            }
+
+            # Get parameters for new sell order (Price, Amount and Sum)
+#            my $new_buy = $self->calculateBuy($market, \@trans, $market_orders, $analysis);
+
+            # Step 2: Create new buy orders if not exist yet
+
+
+        } else {
+            # Cances all orders
+            foreach my $o (@{ $orders->{$market} }) {
+                $log->info("Cancel order $o->{orderNumber}");
+                my $rs = $exchange->poloniex_trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
+                $log->info(Dumper $rs) if $rs;
             }
         }
 
-        # Get open orders for currentPair
-        my $orders = $exchange->poloniex_trading_api( 'returnOpenOrders', { currencyPair => $currency_pair } );
+
+        if ($analysis->{buy}->{sum}) {
+            printf("Total Buy (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n", 
+                $analysis->{buy}->{price}, $analysis->{buy}->{amount}, $analysis->{buy}->{sum});
+        }
+        if ($analysis->{sell}->{sum}) {
+            printf("Total Sell (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n",
+                $analysis->{sell}->{price}, $analysis->{sell}->{amount}, $analysis->{sell}->{sum_with_fee});
+        }
+        
+        my $msg = ($analysis->{profit_lost} > 0) ? 'You have earned' : 'Amount Rest';
+        printf("$msg:\t%.8f\tProfit/Lost:\t%.8f\n\n", $analysis->{amount_rest}, $analysis->{profit_lost});
+
+        if ($analysis->{profit_lost} < 0) {
+            printf("Recomended Sell +" . $new_sell->{take_profit} * 100 . '%% ROI ' . $new_sell->{ROI} * 100 . '%%' .
+                " (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n",
+                $new_sell->{price}, $new_sell->{amount}, $new_sell->{sum});
+            printf("Amount will be earned:\t%.8f\n\n", $analysis->{amount_rest} - $new_sell->{amount});
+        }
+
+        # Get open orders for market and print
+        my $orders = $exchange->poloniex_trading_api( 'returnOpenOrders', { currencyPair => $market } );
         my $header = ['OrderNumber', 'Type', 'Price', 'Amount', 'StartingAmount', 'Total', 'Date'];
         my $data;
         foreach ( sort {$b->{rate} <=> $a->{rate}} @$orders ) {
@@ -207,13 +258,46 @@ sub getTradeHistory ($;$) {
             ];
         }
         $self->print_table($header, $data);
+
+        # Print history for market
+        $header = 
+          ['OrderNumber', 'Market', 'Type', 'Price', 'Amount', 'Fee', 'Total', 'Date', 'TradeID', 'GlobalTradeID'];
+        $data = [];
+        foreach (sort {$a->{date} cmp $b->{date}} @trans) {
+                push @$data, [
+                    $_->{orderNumber},
+                    $_->{market},
+                    $_->{type},
+                    $_->{rate},
+                    $_->{amount},
+                    $_->{fee},
+                    $_->{total},
+                    $_->{date},
+                    $_->{tradeID},
+                    $_->{globalTradeID},
+                ];
+        }
+        $self->print_table($header, $data);
     }
-    @transactions = sort {$a->{date} cmp $b->{date}} @transactions;
+}
+
+# Get trade history
+sub getTradeHistory ($;$) {
+    my $self     = shift;
+    my $exchange = shift;
+    my $options  = shift;
+
+    my $transactions = $exchange->getTradeHistory($options);
+
+    my @trans;
+    foreach my $market (keys %$transactions) {
+        push @trans, map { $_->{market} = $market; $_  } @{ $transactions->{$market} };
+    }
 
     my $header = 
       ['OrderNumber', 'Market', 'Type', 'Price', 'Amount', 'Fee', 'Total', 'Date', 'TradeID', 'GlobalTradeID'];
     my $data;
-    foreach (@transactions) {
+    foreach (sort {$a->{date} cmp $b->{date}} @trans) {
             push @$data, [
                 $_->{orderNumber},
                 $_->{market},
@@ -230,13 +314,31 @@ sub getTradeHistory ($;$) {
     $self->print_table($header, $data);
 }
 
-
 # Get all open orders
 sub getOpenOrders ($) {
     my $self = shift;
     my $exchange = shift;
 
-    my ($header, $data) = $exchange->getOpenOrders();
+    my $rs = $exchange->getOpenOrders();
+    my @markets = grep scalar @{ $rs->{$_} }, sort keys %$rs;
+    
+    my $header = ['OrderNumber', 'Type', 'Price', 'Amount', 'StartingAmount', 'Total', 'Date'];
+    my $data;
+    foreach my $market (@markets) {
+        my $group = {name => $market};  #TODO add current price
+        foreach ( @{ $rs->{$market} } ) {
+            push @{ $group->{data} }, [
+                $_->{orderNumber},
+                $_->{type},
+                $_->{rate},
+                $_->{amount},
+                $_->{startingAmount},
+                $_->{total},
+                $_->{date},
+            ];
+        }
+        push @$data, $group;
+    }
     
     $self->print_table($header, $data);
 }

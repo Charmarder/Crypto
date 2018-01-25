@@ -82,7 +82,7 @@ $GO->{SCRIPT} = {
             mandatory => 1,
             default   => 'balances',
         },
-        'currency-pair=s' => {
+        'market=s' => {
             info      => 'Currency pair',
         },
         'start=s' => {
@@ -102,8 +102,8 @@ $GO->{SCRIPT} = {
     examples    => [
         "$Script -e poloniex -c balances",
         "$Script -e poloniex -c orders",
-        "$Script -e poloniex -c history",
-        "$Script -e poloniex -c history -cur BTC_BCN --start '2018-01-09'",
+        "$Script -e poloniex -c history -m BTC_BCN --start '2018-01-09'",
+        "$Script -e poloniex -c trade",
         "$Script -e poloniex -c list",
     ],
 };
@@ -114,7 +114,7 @@ $GO->{SCRIPT} = {
 ###############################################################################
 my $options = Util::Config::get_options($GO->{SCRIPT});
 
-$options->{'currency-pair'} =~ s/(\w+)\/(\w+)/$2_$1/ if ($options->{'currency-pair'});
+$options->{market} =~ s/(\w+)\/(\w+)/$2_$1/ if ($options->{market});
 
 $log->level($DEBUG) if ($options->{debug});
 $log->debug("$Script called. Options are:\n" . Dumper($options));
@@ -134,6 +134,8 @@ if ($options->{command} eq 'balances') {
     $strategy->getOpenOrders($exchange);
 } elsif ($options->{command} eq 'history') {
     $strategy->getTradeHistory($exchange, $options);
+} elsif ($options->{command} eq 'trade') {
+    $strategy->trade($exchange, $options);
 } elsif ($options->{command} eq 'list') {
     Util::Config::usage('Start Price must be defined') if (!$options->{'start-price'});
     $strategy->calculateOrderList($options->{'start-price'});
