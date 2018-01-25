@@ -136,12 +136,42 @@ sub calculateBuy {
 
     my $new_buy;
 
-    # find stat price and start amount
-    my $first_order = [sort {$a->{date} cmp $b->{date}} @$trans]->[0];
-    my $last_order  = [sort {$b->{date} cmp $a->{date}} @$trans]->[0];
-    $log->error(Dumper $first_order);
+    # find Start Price and Start Amount
+    my $first_order = [sort {$a->{date} cmp $b->{date}} grep $_->{type} eq 'buy', @$trans]->[0];
+    my $last_order  = [sort {$b->{date} cmp $a->{date}} grep $_->{type} eq 'buy', @$trans]->[0];
+	$log->error(Dumper $first_order);
     $log->error(Dumper $last_order);
 
+	my $start_price = $first_order->{rate};
+	my $start_amount = $first_order->{amount};
+
+	my @buys;
+   	my $price_step = 0.02;
+	for (my $i = 0; $i < 5; $i++) {
+		push @buys, {
+			price => $start_price * (1 -  ) ,
+			amount => ,
+			sum => ,
+		};
+    }
+
+   	my $price_step = 0.03;
+	for (my $i = 0; $i < 5; $i++) {
+		push @buys, {
+			price => $start_price * (1 -  ) ,
+			amount => ,
+			sum => ,
+		};
+    }
+
+	my $price_step = 0.05;
+	for (my $i = 0; $i < 5; $i++) {
+		push @buys, {
+			price => $start_price * (1 -  ) ,
+			amount => ,
+			sum => ,
+		};
+    }
     return $new_buy;
 }
 
@@ -150,6 +180,8 @@ sub trade ($;$) {
     my $self     = shift;
     my $exchange = shift;
     my $options  = shift;
+
+    $options->{start} = get_config_value('StartTradeDate', 'Poloniex');
 
     my $transactions = $exchange->getTradeHistory($options);
     my $orders       = $exchange->getOpenOrders();
@@ -162,18 +194,22 @@ sub trade ($;$) {
     }
 
     foreach my $market (@markets) {
-        print '-' x length($market) . "\n$market\n" . '-' x length($market) . "\n";
-
         my $start_date = get_config_value($market, 'Poloniex');
         my @trans = grep $_->{date} ge $start_date, map { $_->{market} = $market; $_  } @{ $transactions->{$market} };
 
+		next unless scalar @trans;
+
+		print '-' x length($market) . "\n$market\n" . '-' x length($market) . "\n";
+
         my $analysis = $self->getAnalysis(\@trans);
+		$log->info(Dumper $analysis);
 
         my $new_sell;
-        if ($analysis->{profit_lost} < 0) {
+        if ($analysis->{profit_lost} > 0) {
             # Get parameters for new sell order (Price, Amount and Sum)
             $new_sell = $self->calculateSell($market, 
                 $analysis->{buy}->{price}, $analysis->{buy}->{sum}, $analysis->{sell}->{sum});
+			$log->info(Dumper $new_sell);
 
             # Step 1: Cancel old sell order if exist and create new one if not exist
             my $market_orders = $orders->{$market};
@@ -207,7 +243,7 @@ sub trade ($;$) {
                 $log->debug("Nothing to do, sell order with amount $new_sell_amount already exist.");
             }
 
-            # Get parameters for new sell order (Price, Amount and Sum)
+            # Get parameters for new buy order (Price, Amount and Sum)
 #            my $new_buy = $self->calculateBuy($market, \@trans, $market_orders, $analysis);
 
             # Step 2: Create new buy orders if not exist yet
@@ -245,7 +281,7 @@ sub trade ($;$) {
         # Get open orders for market and print
         my $orders = $exchange->poloniex_trading_api( 'returnOpenOrders', { currencyPair => $market } );
         my $header = ['OrderNumber', 'Type', 'Price', 'Amount', 'StartingAmount', 'Total', 'Date'];
-        my $data;
+        my $data = [];
         foreach ( sort {$b->{rate} <=> $a->{rate}} @$orders ) {
             push @$data, [
                 $_->{orderNumber},
@@ -257,7 +293,7 @@ sub trade ($;$) {
                 $_->{date},
             ];
         }
-        $self->print_table($header, $data);
+        $self->print_table($header, $data) if (scalar @$data);
 
         # Print history for market
         $header = 
