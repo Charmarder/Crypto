@@ -28,15 +28,15 @@ use Util::Logger qw($log);
 use Log::Log4perl::Level;
 
 has 'price_step'  => (is => 'rw', isa => 'Str');
-has 'amount_increase' => (is => 'rw', isa => 'Str');
+has 'amount_step' => (is => 'rw', isa => 'Str');
 
 sub BUILD { 
     my ($self, $args) = @_;  
 
     $log->level($DEBUG) if ($GO->{IN}->{debug});
 
-    $self->{price_step}      = get_config_value('PriceStep');
-    $self->{amount_increase} = get_config_value('AmountIncrease');
+    $self->{price_step}  = get_config_value('PriceStep');
+    $self->{amount_step} = get_config_value('AmountStep');
     
     return $self; 
 }
@@ -126,52 +126,64 @@ sub calculateSell {
     return $new_sell;
 }
 
-# Return parameters for new sell order
-sub calculateBuy {
-    my $self          = shift;
-    my $market        = shift;
-    my $trans         = shift;
-    my $market_orders = shift;
-    my $analysis      = shift;
+# Return parameters for new buy orders
+sub calculateBuy ($$$) {
+    my $self     = shift;
+    my $market   = shift;
+    my $trans    = shift;
+    my $orders   = shift;
 
+    my $buy_orders = [grep $_->{type} eq 'buy', @$orders];
     my $new_buy;
 
-    # find Start Price and Start Amount
-    my $first_order = [sort {$a->{date} cmp $b->{date}} grep $_->{type} eq 'buy', @$trans]->[0];
-    my $last_order  = [sort {$b->{date} cmp $a->{date}} grep $_->{type} eq 'buy', @$trans]->[0];
-	$log->error(Dumper $first_order);
-    $log->error(Dumper $last_order);
+    return [] if (@$buy_orders > 2);
 
-	my $start_price = $first_order->{rate};
-	my $start_amount = $first_order->{amount};
+    # Find Start Price and Start Amount
+    my ($start_price, $start_amount);
+    foreach (sort {$a->{date} cmp $b->{date}} grep $_->{type} eq 'buy', @$trans) {
+        if (! defined $start_price) {
+            $start_price = $_->{rate};
+            $start_amount = $_->{amount};
+        } elsif ($start_price == $_->{rate}) {
+            $start_amount += $_->{amount};
+        } else {
+            last;
+        }
+    }
+	$log->debug("Start Price and Amount: $start_price, $start_amount");
 
+    # Сalculate array of buy orders
 	my @buys;
-   	my $price_step = 0.02;
-	for (my $i = 0; $i < 5; $i++) {
+   	my $price_step = get_config_value('PriceStep', $market);
+    my $amount_step = get_config_value('AmountStep', $market);
+    my $step_number = int(50/($price_step*100));
+	for (my $i = 0; $i < $step_number; $i++) {
+        my $price = $start_price * (1 -  $price_step * $i);
+        my $amount = $start_amount * (1 + $amount_step) ** $i;
 		push @buys, {
-			price => $start_price * (1 -  ) ,
-			amount => ,
-			sum => ,
+            currencyPair => $market,
+			rate         => sprintf("%.8f", $price),
+			amount       => sprintf("%.8f", $amount),
+            postOnly     => 1,
 		};
     }
 
-   	my $price_step = 0.03;
-	for (my $i = 0; $i < 5; $i++) {
-		push @buys, {
-			price => $start_price * (1 -  ) ,
-			amount => ,
-			sum => ,
-		};
+    # Find last buy from history or orders
+    my $last_order;
+    if (@$buy_orders) {
+        $last_order = [sort {$a->{rate} cmp $b->{rate}} @$buy_orders]->[0];
+    } else {
+        $last_order  = [sort {$b->{date} cmp $a->{date}} grep $_->{type} eq 'buy', @$trans]->[0];
     }
+    $log->debug(Dumper $last_order);
 
-	my $price_step = 0.05;
-	for (my $i = 0; $i < 5; $i++) {
-		push @buys, {
-			price => $start_price * (1 -  ) ,
-			amount => ,
-			sum => ,
-		};
-    }
+    # Grep not created orders
+    my $not_created = [grep $_->{rate} < $last_order->{rate}, @buys];
+
+    my $max_orders = get_config_value('MaxBuyOrders', $market);
+    my $num = ($max_orders - @$buy_orders > @$not_created) ? @$not_created - 1 : $max_orders - 1 - @$buy_orders;
+    @$new_buy = (grep $_->{rate} < $last_order->{rate}, @buys)[0..$num];
+
     return $new_buy;
 }
 
@@ -202,19 +214,19 @@ sub trade ($;$) {
 		print '-' x length($market) . "\n$market\n" . '-' x length($market) . "\n";
 
         my $analysis = $self->getAnalysis(\@trans);
-		$log->info(Dumper $analysis);
+		$log->debug(Dumper $analysis);
 
         my $new_sell;
-        if ($analysis->{profit_lost} > 0) {
+        if ($analysis->{profit_lost} < 0) {
             # Get parameters for new sell order (Price, Amount and Sum)
             $new_sell = $self->calculateSell($market, 
                 $analysis->{buy}->{price}, $analysis->{buy}->{sum}, $analysis->{sell}->{sum});
-			$log->info(Dumper $new_sell);
+			$log->debug(Dumper $new_sell);
 
             # Step 1: Cancel old sell order if exist and create new one if not exist
             my $market_orders = $orders->{$market};
-            my $new_sell_amount = sprintf("%.8f", $new_sell->{amount});
-            if (! grep $_->{type} eq 'sell' && $_->{amount} == $new_sell_amount, @$market_orders) {
+            my $new_amount = sprintf("%.8f", $new_sell->{amount});
+            if (! grep $_->{type} eq 'sell' && $_->{amount} == $new_amount, @$market_orders) {
                 # Be sure that there is no more then one sell order
                 my @sell_orders = grep $_->{type} eq 'sell', @$market_orders;
                 if (@sell_orders > 1) {
@@ -228,26 +240,35 @@ sub trade ($;$) {
                         $log->info(Dumper $rs) if $rs;
                     }
 
-                    # Place new sell order
-                    my $new_sell_order_params = {
+                    # Create new Sell order
+                    my $new_price = sprintf("%.8f", $new_sell->{price});
+                    my $new_order_params = {
                         currencyPair => $market,
-                        rate         => sprintf("%.8f", $new_sell->{price} ),
-                        amount       => $new_sell_amount,
+                        rate         => $new_price,
+                        amount       => $new_amount,
                         postOnly     => 1,
                     };
-                    $log->info("Create new Sell order: " . Dumper $new_sell_order_params);
-                    my $rs = $exchange->poloniex_trading_api('sell', $new_sell_order_params);
+                    $log->info("Create new Sell order: $new_price $new_amount");
+                    my $rs = $exchange->poloniex_trading_api('sell', $new_order_params);
                     $log->info(Dumper $rs) if $rs;
                 }
             } else {
-                $log->debug("Nothing to do, sell order with amount $new_sell_amount already exist.");
+                $log->debug("Nothing to do, sell order with amount $new_amount already exist.");
             }
 
             # Get parameters for new buy order (Price, Amount and Sum)
-#            my $new_buy = $self->calculateBuy($market, \@trans, $market_orders, $analysis);
+            my $new_buy = $self->calculateBuy($market, \@trans, $market_orders, $analysis);
+			$log->debug(Dumper $new_buy);
 
-            # Step 2: Create new buy orders if not exist yet
+            # Step 2: Create new buy orders
+            if (@$new_buy) {
+                foreach (@$new_buy) {
+                    $log->info("Create new Buy order: $_->{rate} $_->{amount}");
+                    my $rs = $exchange->poloniex_trading_api('buy', $_);
+                    $log->info(Dumper $rs) if $rs;
+                }
 
+            }
 
         } else {
             # Cances all orders
