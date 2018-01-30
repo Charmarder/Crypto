@@ -47,6 +47,8 @@ sub BUILD {
     $self->{key} = get_config_value('key', 'Binance');
     $self->{secret} = get_config_value('secret', 'Binance');
 
+    $ENV{PERL_LWP_SSL_VERIFY_HOSTNAME} = get_config_value('SSL_VERIFY_HOSTNAME', undef, 0); 
+
     $self->{mech} = WWW::Mechanize->new(autocheck => 0);
     my $proxy = get_config_value('proxy', undef, 0);
     $self->{mech}->proxy(['ftp', 'http', 'https'] => $proxy) if ($proxy);
@@ -62,32 +64,18 @@ sub BUILD {
 sub getBalances () {
     my $self = shift;
 
-#    my $rs = $self->_get_endpoint('time');
-#    $log->debug(Dumper $rs);
-#    my $rs = $self->_get_endpoint('depth', {symbol => 'ETHBTC', limit => 5});
-#    my $rs = $self->_get_endpoint('trades', {symbol => 'ETHBTC'});
-#    my $rs = $self->_get_endpoint('historicalTrades', {symbol => 'ETHBTC'});
     my $rs = $self->_get_endpoint('account', 1);
-    $log->debug(Dumper $rs);
+    my @balances = map {
+        {
+            coin      => $_->{asset},
+            locked    => $_->{locked},
+            available => $_->{free},
+			total 	  => sprintf("%.8f", $_->{free} + $_->{locked}),
+        }
+    } grep $_->{free} > 0 || $_->{locked} > 0, @{ $rs->{balances} };
+    $log->debug(Dumper \@balances);
 
-#    my @a = grep $_->{quoteAsset} eq 'BTC' && $_->{filters}->[2]->{minNotional} < 0.002, @{ $rs->{symbols} };
-##    $log->debug(Dumper @a);
-#    @a = map {"$_->{symbol} $_->{filters}->[2]->{minNotional}"} @a;
-#    $log->debug(Dumper \@a);
-#
-#    my @b = grep $_->{quoteAsset} eq 'ETH' && $_->{filters}->[2]->{minNotional} < 0.02, @{ $rs->{symbols} };
-#    @b = map {$_->{symbol}} @b;
-#    $log->debug(Dumper \@b);
-#
-#    my @c = grep $_->{quoteAsset} eq 'BNB' && $_->{filters}->[2]->{minNotional} < 1, @{ $rs->{symbols} };
-#    @c = map {$_->{symbol}} @c;
-#    $log->debug(Dumper \@c);
-#
-#    my @d = grep $_->{quoteAsset} eq 'USDT' && $_->{filters}->[2]->{minNotional} < 20, @{ $rs->{symbols} };
-#    @d = map {"$_->{symbol} $_->{filters}->[2]->{minNotional}"} @d;
-#    $log->debug(Dumper \@d);
-
-    exit;
+    return \@balances;
 }
 
 # Send GET request to Binance Public Rest API

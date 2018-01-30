@@ -142,6 +142,8 @@ if ($options->{command} eq 'balances') {
 } elsif ($options->{command} eq 'list') {
     Util::Config::usage('Start Price must be defined') if (!$options->{'start-price'});
     $strategy->calculateOrderList($options->{'start-price'});
+} elsif ($options->{command} eq 'test') {
+	print Dumper \%INC;
 } else {
     die("Unsupported command\n");
 }

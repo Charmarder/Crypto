@@ -150,22 +150,22 @@ sub calculateBuy ($$$) {
             last;
         }
     }
-	$log->debug("Start Price and Amount: $start_price, $start_amount");
+    $log->debug("Start Price and Amount: $start_price, $start_amount");
 
     # Сalculate array of buy orders
-	my @buys;
-   	my $price_step = get_config_value('PriceStep', $market);
+    my @buys;
+    my $price_step = get_config_value('PriceStep', $market);
     my $amount_step = get_config_value('AmountStep', $market);
     my $step_number = int(50/($price_step*100));
-	for (my $i = 0; $i < $step_number; $i++) {
+    for (my $i = 0; $i < $step_number; $i++) {
         my $price = $start_price * (1 -  $price_step * $i);
         my $amount = $start_amount * (1 + $amount_step) ** $i;
-		push @buys, {
+        push @buys, {
             currencyPair => $market,
-			rate         => sprintf("%.8f", $price),
-			amount       => sprintf("%.8f", $amount),
+            rate         => sprintf("%.8f", $price),
+            amount       => sprintf("%.8f", $amount),
             postOnly     => 1,
-		};
+        };
     }
 
     # Find last buy from history or orders
@@ -209,19 +209,19 @@ sub trade ($;$) {
         my $start_date = get_config_value($market, 'Poloniex');
         my @trans = grep $_->{date} ge $start_date, map { $_->{market} = $market; $_  } @{ $transactions->{$market} };
 
-		next unless scalar @trans;
+        next unless scalar @trans;
 
-		print '-' x length($market) . "\n$market\n" . '-' x length($market) . "\n";
+        print '-' x length($market) . "\n$market\n" . '-' x length($market) . "\n";
 
         my $analysis = $self->getAnalysis(\@trans);
-		$log->debug(Dumper $analysis);
+        $log->debug(Dumper $analysis);
 
         my $new_sell;
         if ($analysis->{profit_lost} < 0) {
             # Get parameters for new sell order (Price, Amount and Sum)
             $new_sell = $self->calculateSell($market, 
                 $analysis->{buy}->{price}, $analysis->{buy}->{sum}, $analysis->{sell}->{sum});
-			$log->debug(Dumper $new_sell);
+            $log->debug(Dumper $new_sell);
 
             # Step 1: Cancel old sell order if exist and create new one if not exist
             my $market_orders = $orders->{$market};
@@ -258,7 +258,7 @@ sub trade ($;$) {
 
             # Get parameters for new buy order (Price, Amount and Sum)
             my $new_buy = $self->calculateBuy($market, \@trans, $market_orders, $analysis);
-			$log->debug(Dumper $new_buy);
+            $log->debug(Dumper $new_buy);
 
             # Step 2: Create new buy orders
             if (@$new_buy) {
@@ -410,8 +410,33 @@ sub getBalances ($) {
     my $self = shift;
     my $exchange = shift;
 
-    my ($header, $data, $total) = $exchange->getBalances();
-    
+    my ($balances, $btcusd) = $exchange->getBalances();
+
+    my $total_btc = 0;
+    map {$total_btc += $_->{btc_value} if (defined $_->{btc_value})} @$balances;
+
+    my $header = ($total_btc) ? 
+      ['Coin', 'Total', 'On Orders', 'Available', 'BTC Value', 'Weight'] : ['Coin', 'Total', 'On Orders', 'Available'];
+
+    my $data;
+    foreach (@$balances) {
+        my $row = [
+            $_->{coin},
+            $_->{total},
+            $_->{locked},
+            $_->{available},
+        ];
+        if ($_->{btc_value}) {
+            push @$row, (
+                $_->{btc_value},
+                sprintf("%.2f%%", $_->{btc_value}/$total_btc*100),
+            );
+        }
+        push @$data, $row;
+    }
+
+    my $total = sprintf("Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $total_btc, $total_btc) if ($total_btc);
+
     $self->print_table($header, $data, $total);
 }
 

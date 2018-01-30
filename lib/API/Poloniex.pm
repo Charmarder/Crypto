@@ -101,29 +101,21 @@ sub getBalances () {
     my $self = shift;
 
     my $rs = $self->poloniex_trading_api('returnCompleteBalances');
-    my @coins = grep $rs->{$_}->{btcValue} > 0, sort keys %$rs;
 
-    my $total_btc = 0;
-    map {$total_btc += $rs->{$_}->{btcValue}} keys %$rs;
+    my @balances = map {
+        {
+            coin      => $_,
+            locked    => $rs->{$_}->{onOrders},
+            available => $rs->{$_}->{available},
+			total 	  => sprintf("%.8f", $rs->{$_}->{available} + $rs->{$_}->{onOrders}),
+			btc_value => $rs->{$_}->{btcValue},
+        }
+    } grep $rs->{$_}->{btcValue} > 0, sort keys %$rs;
 
-    my $header = ['Coin', 'Total', 'On Orders', 'Available', 'BTC Value', 'Weight'];
-    my $data;
-    foreach (@coins) {
-        push @$data, [
-            $_,
-            sprintf("%.8f", $rs->{$_}->{available} + $rs->{$_}->{onOrders}),
-            $rs->{$_}->{onOrders},
-            $rs->{$_}->{available},
-            $rs->{$_}->{btcValue},
-            sprintf("%.2f%%", $rs->{$_}->{btcValue}/$total_btc*100),
-        ];
-    }
-
-    $rs = $self->{mech}->get("https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD");
+    $self->{mech}->get("https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD");
     my $btcusd = from_json($self->{mech}->text())->{USD};
-    my $total = sprintf("Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $total_btc, $total_btc);
-
-    return ($header, $data, $total);
+    
+    return \@balances, $btcusd;
 }
 
 
