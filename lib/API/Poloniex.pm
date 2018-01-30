@@ -161,13 +161,7 @@ sub poloniex_public_api ($$;$) {
     }
     $log->debug($url);
 
-    my $res = $mech->get($url);
-    unless ($res->is_success) {
-        my $r = from_json($mech->text);
-        $log->logdie('ERROR: HTTP Code: ' . $mech->status() . ": $r->{error}");
-    } else {
-        return from_json($mech->text());
-    }
+    return $self->_handle_response($mech->get($url));
 }
 
 ###############################################################################
@@ -222,14 +216,35 @@ sub poloniex_trading_api ($$;$) {
 
     my $signature = hmac_sha512_hex($data_string, $self->{secret});
     $mech->add_header(
-		'Content-Type' => 'application/x-www-form-urlencoded',
+#		'Content-Type' => 'application/x-www-form-urlencoded',
         'Key'          => $self->{key},
         'Sign'         => $signature,
     );
 #    $log->debug($signature);
 
-    my $res = $mech->post($url, $data);
-    unless ($res->is_success) {
+    my $response = $mech->post($url, $data);
+    unless ($response->is_success) {
+        $log->debug($mech->text());
+        my $r = from_json($mech->text);
+        $log->logdie('ERROR: HTTP Code: ' . $mech->status() . ": $r->{error}");
+    } else {
+        return from_json($mech->text());
+    }
+
+    return $self->_handle_response($mech->post($url, $data));
+}
+
+
+sub _handle_response {
+    my $self     = shift; 
+    my $response = shift;
+
+    my $mech = $self->{mech};
+
+    $log->debug($mech->text());
+    $log->debug($response->is_success);
+    unless ($response->is_success) {
+        $log->debug($mech->text());
         my $r = from_json($mech->text);
         $log->logdie('ERROR: HTTP Code: ' . $mech->status() . ": $r->{error}");
     } else {

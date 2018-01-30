@@ -345,6 +345,11 @@ sub getTradeHistory ($;$) {
     my $options  = shift;
 
     my $transactions = $exchange->getTradeHistory($options);
+    if (ref $transactions ne 'HASH') {
+        print "No history today\n";
+        return;
+    }
+    $log->debug(Dumper $transactions);
 
     my @trans;
     foreach my $market (keys %$transactions) {

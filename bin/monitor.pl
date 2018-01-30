@@ -45,6 +45,7 @@ use Log::Log4perl::Level;
 use JSON;
 
 use API::Poloniex;
+use API::Binance;
 use Strategy::BuyLowSellHigh;
 
 ############################################################################### 
@@ -75,7 +76,7 @@ $GO->{SCRIPT} = {
         'exchange|e=s' => {
             info      => 'Name of exchange',
             default   => 'poloniex',
-            pattern   => '/^poloniex$/',
+            pattern   => '/^poloniex|binance$/',
         },
         'command|c=s' => {
             info      => 'Name of command',
@@ -122,6 +123,8 @@ $log->debug("$Script called. Options are:\n" . Dumper($options));
 my $exchange;
 if ($options->{exchange} eq 'poloniex') {
     $exchange = API::Poloniex->new();
+} elsif ($options->{exchange} eq 'binance') {
+    $exchange = API::Binance->new();
 } else {
     die("Unsupported exchange\n");
 }
