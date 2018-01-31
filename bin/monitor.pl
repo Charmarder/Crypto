@@ -46,6 +46,7 @@ use JSON;
 
 use API::Poloniex;
 use API::Binance;
+use API::CryptoCompare;
 use Strategy::BuyLowSellHigh;
 
 ############################################################################### 
@@ -132,6 +133,8 @@ if ($options->{exchange} eq 'poloniex') {
 # Dispatching
 my $strategy = Strategy::BuyLowSellHigh->new();
 if ($options->{command} eq 'balances') {
+    $strategy->getBalances($exchange);
+    $exchange = API::Binance->new();
     $strategy->getBalances($exchange);
 } elsif ($options->{command} eq 'orders') {
     $strategy->getOpenOrders($exchange);

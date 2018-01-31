@@ -45,7 +45,7 @@ sub BUILD {
 
     $log->level($DEBUG) if ($GO->{IN}->{debug});
     
-    $self->{public_url} = 'https://poloniex.com/public?command=';
+    $self->{public_url} = 'https://poloniex.com/public';
     $self->{trading_url} = 'https://poloniex.com/tradingApi';
     $self->{key} = get_config_value('key', 'Poloniex');
     $self->{secret} = get_config_value('secret', 'Poloniex');
@@ -76,7 +76,7 @@ sub getTradeHistory ($) {
     $params->{end} = str2time($options->{end}, 'GMT') if $options->{end};
     $params->{currencyPair} = $options->{market} ? $options->{market} : 'all';
 
-    my $rs = $self->poloniex_trading_api('returnTradeHistory', $params);
+    my $rs = $self->trading_api('returnTradeHistory', $params);
     if ($options->{market}) {
     	return {$options->{market} => $rs};
     } else {
@@ -89,7 +89,7 @@ sub getTradeHistory ($) {
 sub getOpenOrders () {
     my $self = shift;
 
-    my $rs = $self->poloniex_trading_api('returnOpenOrders', {currencyPair => 'all'});
+    my $rs = $self->trading_api('returnOpenOrders', {currencyPair => 'all'});
 
     return $rs;
 }
@@ -100,7 +100,7 @@ sub getOpenOrders () {
 sub getBalances () {
     my $self = shift;
 
-    my $rs = $self->poloniex_trading_api('returnCompleteBalances');
+    my $rs = $self->trading_api('returnCompleteBalances');
 
     my @balances = map {
         {
@@ -112,10 +112,7 @@ sub getBalances () {
         }
     } grep $rs->{$_}->{btcValue} > 0, sort keys %$rs;
 
-    $self->{mech}->get("https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD");
-    my $btcusd = from_json($self->{mech}->text())->{USD};
-    
-    return \@balances, $btcusd;
+    return \@balances;
 }
 
 
@@ -139,7 +136,7 @@ sub getBalances () {
 # returnCurrencies - Returns information about currencies.
 # returnLoanOrders&currency=BTC - Returns the list of loan offers and demands for a given currency,
 #       specified by the "currency" GET parameter.
-sub poloniex_public_api ($$;$) {
+sub public_api ($$;$) {
     my $self = shift; 
     my $method = shift;
     my $params = shift || {};
@@ -147,7 +144,7 @@ sub poloniex_public_api ($$;$) {
     my $url = $self->{public_url};
     my $mech = $self->{mech};
 
-    $url .= $method;
+    $url .= "?command=$method";
     if (scalar keys %$params) {
         $url .= '&' . join '&', map {"$_=$params->{$_}"} keys %$params;
     }
@@ -188,7 +185,7 @@ sub poloniex_public_api ($$;$) {
 # returnActiveLoans
 # returnLendingHistory
 # toggleAutoRenew
-sub poloniex_trading_api ($$;$) {
+sub trading_api ($$;$) {
     my $self = shift; 
     my $method = shift;
     my $params = shift || {};
@@ -198,32 +195,21 @@ sub poloniex_trading_api ($$;$) {
     my $url = $self->{trading_url};
     my $mech = $self->{mech};
 
-    my $data = {
-        command => $method,
-        nonce   => time * 100000,
-        %$params,
-    };
-    my $data_string = join '&', map {"$_=$data->{$_}"} keys %$data;
-    $log->debug("$url?$data_string");
+    $params->{command} = $method;
+    $params->{nonce}   = time * 100000;
 
-    my $signature = hmac_sha512_hex($data_string, $self->{secret});
+    my $query_string = join '&', map {"$_=$params->{$_}"} keys %$params;
+    $log->debug("$url?$query_string");
+
+    my $signature = hmac_sha512_hex($query_string, $self->{secret});
     $mech->add_header(
-#		'Content-Type' => 'application/x-www-form-urlencoded',
+		'Content-Type' => 'application/x-www-form-urlencoded',
         'Key'          => $self->{key},
         'Sign'         => $signature,
     );
-#    $log->debug($signature);
+    $log->debug($signature);
 
-    my $response = $mech->post($url, $data);
-    unless ($response->is_success) {
-        $log->debug($mech->text());
-        my $r = from_json($mech->text);
-        $log->logdie('ERROR: HTTP Code: ' . $mech->status() . ": $r->{error}");
-    } else {
-        return from_json($mech->text());
-    }
-
-    return $self->_handle_response($mech->post($url, $data));
+    return $self->_handle_response($mech->post($url, $params));
 }
 
 

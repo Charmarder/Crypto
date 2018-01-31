@@ -236,7 +236,7 @@ sub trade ($;$) {
                         # Cancel old sell order
                         my $o = $sell_orders[0];
                         $log->info("Cancel old Sell order $o->{orderNumber}");
-                        my $rs = $exchange->poloniex_trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
+                        my $rs = $exchange->trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
                         $log->info(Dumper $rs) if $rs;
                     }
 
@@ -249,7 +249,7 @@ sub trade ($;$) {
                         postOnly     => 1,
                     };
                     $log->info("Create new Sell order: $new_price $new_amount");
-                    my $rs = $exchange->poloniex_trading_api('sell', $new_order_params);
+                    my $rs = $exchange->trading_api('sell', $new_order_params);
                     $log->info(Dumper $rs) if $rs;
                 }
             } else {
@@ -264,7 +264,7 @@ sub trade ($;$) {
             if (@$new_buy) {
                 foreach (@$new_buy) {
                     $log->info("Create new Buy order: $_->{rate} $_->{amount}");
-                    my $rs = $exchange->poloniex_trading_api('buy', $_);
+                    my $rs = $exchange->trading_api('buy', $_);
                     $log->info(Dumper $rs) if $rs;
                 }
 
@@ -274,7 +274,7 @@ sub trade ($;$) {
             # Cances all orders
             foreach my $o (@{ $orders->{$market} }) {
                 $log->info("Cancel order $o->{orderNumber}");
-                my $rs = $exchange->poloniex_trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
+                my $rs = $exchange->trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
                 $log->info(Dumper $rs) if $rs;
             }
         }
@@ -290,17 +290,17 @@ sub trade ($;$) {
         }
         
         my $msg = ($analysis->{profit_lost} > 0) ? 'You have earned' : 'Amount Rest';
-        printf("$msg:\t%.8f\tProfit/Lost:\t%.8f\n\n", $analysis->{amount_rest}, $analysis->{profit_lost});
+        printf("Take Profit: %d%%, ROI: %d%%, $msg: %.8f, Profit/Lost: %.8f\n\n", 
+            $new_sell->{take_profit} * 100, $new_sell->{ROI} * 100,
+            $analysis->{amount_rest}, $analysis->{profit_lost}
+        );
 
         if ($analysis->{profit_lost} < 0) {
-            printf("Recomended Sell +" . $new_sell->{take_profit} * 100 . '%% ROI ' . $new_sell->{ROI} * 100 . '%%' .
-                " (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n",
-                $new_sell->{price}, $new_sell->{amount}, $new_sell->{sum});
             printf("Amount will be earned:\t%.8f\n\n", $analysis->{amount_rest} - $new_sell->{amount});
         }
 
         # Get open orders for market and print
-        my $orders = $exchange->poloniex_trading_api( 'returnOpenOrders', { currencyPair => $market } );
+        my $orders = $exchange->trading_api( 'returnOpenOrders', { currencyPair => $market } );
         my $header = ['OrderNumber', 'Type', 'Price', 'Amount', 'StartingAmount', 'Total', 'Date'];
         my $data = [];
         foreach ( sort {$b->{rate} <=> $a->{rate}} @$orders ) {
@@ -410,14 +410,15 @@ sub getBalances ($) {
     my $self = shift;
     my $exchange = shift;
 
-    my ($balances, $btcusd) = $exchange->getBalances();
+    my $crypto_compare = API::CryptoCompare->new();
+    my $btcusd = $crypto_compare->get('price', {fsym => 'BTC', tsyms => 'USD'})->{USD};
+
+    my $balances = $exchange->getBalances();
 
     my $total_btc = 0;
     map {$total_btc += $_->{btc_value} if (defined $_->{btc_value})} @$balances;
 
-    my $header = ($total_btc) ? 
-      ['Coin', 'Total', 'On Orders', 'Available', 'BTC Value', 'Weight'] : ['Coin', 'Total', 'On Orders', 'Available'];
-
+    my $header = ['Coin', 'Total', 'On Orders', 'Available', 'BTC Value', 'Weight'];
     my $data;
     foreach (@$balances) {
         my $row = [
@@ -425,17 +426,13 @@ sub getBalances ($) {
             $_->{total},
             $_->{locked},
             $_->{available},
+            $_->{btc_value},
+            sprintf("%.2f%%", $_->{btc_value}/$total_btc*100),
         ];
-        if ($_->{btc_value}) {
-            push @$row, (
-                $_->{btc_value},
-                sprintf("%.2f%%", $_->{btc_value}/$total_btc*100),
-            );
-        }
         push @$data, $row;
     }
 
-    my $total = sprintf("Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $total_btc, $total_btc) if ($total_btc);
+    my $total = sprintf("Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $total_btc, $total_btc);
 
     $self->print_table($header, $data, $total);
 }

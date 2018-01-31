@@ -64,16 +64,20 @@ sub BUILD {
 sub getBalances () {
     my $self = shift;
 
-    my $rs = $self->_get_endpoint('account', 1);
+    my $rs = $self->_get_endpoint('v3/ticker/price');
+    my $prices = {map {$_->{symbol} => $_->{price}} @$rs};
+
+    $rs = $self->_get_endpoint('v3/account', 1);
     my @balances = map {
+        my $price = ($_->{asset} eq 'BTC') ? 1 : $prices->{"$_->{asset}BTC"};
         {
             coin      => $_->{asset},
             locked    => $_->{locked},
             available => $_->{free},
-			total 	  => sprintf("%.8f", $_->{free} + $_->{locked}),
+            total     => sprintf("%.8f", $_->{free} + $_->{locked}),
+            btc_value => sprintf("%.8f", $price * ($_->{free} + $_->{locked})),
         }
     } grep $_->{free} > 0 || $_->{locked} > 0, @{ $rs->{balances} };
-    $log->debug(Dumper \@balances);
 
     return \@balances;
 }
@@ -97,8 +101,7 @@ sub _get_endpoint ($;$$) {
         $query_string .= "&signature=$signature";
     }
 
-    my $v = ($signed) ? 'v3' : 'v1';
-    $url .= "/$v/$path";
+    $url .= "/$path";
     $url .= "?$query_string" if ($query_string);
     $log->debug($url);
 
@@ -127,8 +130,7 @@ sub _post_endpoint ($;$) {
         $query_string .= "&signature=$signature";
     }
 
-    my $v = ($signed) ? 'v3' : 'v1';
-    $url .= "/$v/$path";
+    $url .= "/$path";
     $log->debug("$url?$query_string");
 
     return $self->_handle_response($mech->post($url, $params));
