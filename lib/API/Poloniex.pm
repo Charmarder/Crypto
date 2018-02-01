@@ -57,6 +57,11 @@ sub BUILD {
     return $self; 
 }
 
+# Return name of exchange
+sub name {
+    return 'Poloniex';
+}
+
 # Returns your trade history for a given market, specified by the "currencyPair" POST parameter.
 # You may specify "all" as the currencyPair to receive your trade history for all markets. You may
 # optionally specify a range via "start" and/or "end" POST parameters, given in UNIX timestamp
@@ -72,15 +77,15 @@ sub getTradeHistory ($) {
         $params->{start} = str2time(get_config_value($options->{market}, 'Poloniex'), 'GMT');
     } elsif ($options->{start}) {
         $params->{start} = str2time($options->{start}, 'GMT');
-	}
+    }
     $params->{end} = str2time($options->{end}, 'GMT') if $options->{end};
     $params->{currencyPair} = $options->{market} ? $options->{market} : 'all';
 
     my $rs = $self->trading_api('returnTradeHistory', $params);
     if ($options->{market}) {
-    	return {$options->{market} => $rs};
+        return {$options->{market} => $rs};
     } else {
-    	return $rs;
+        return $rs;
     }
 }
 
@@ -94,9 +99,8 @@ sub getOpenOrders () {
     return $rs;
 }
 
-# Returns all of your balances, including available balance, balance on orders, and the estimated 
-# BTC value of your balance. By default, this call is limited to your exchange account; set the 
-# "account" POST parameter to "all" to include your margin and lending accounts.
+# Returns all of your balances, including available, on orders, 
+# and the estimated BTC value of your balance
 sub getBalances () {
     my $self = shift;
 
@@ -107,8 +111,8 @@ sub getBalances () {
             coin      => $_,
             locked    => $rs->{$_}->{onOrders},
             available => $rs->{$_}->{available},
-			total 	  => sprintf("%.8f", $rs->{$_}->{available} + $rs->{$_}->{onOrders}),
-			btc_value => $rs->{$_}->{btcValue},
+            total     => sprintf("%.8f", $rs->{$_}->{available} + $rs->{$_}->{onOrders}),
+            btc_value => $rs->{$_}->{btcValue},
         }
     } grep $rs->{$_}->{btcValue} > 0, sort keys %$rs;
 
@@ -203,7 +207,7 @@ sub trading_api ($$;$) {
 
     my $signature = hmac_sha512_hex($query_string, $self->{secret});
     $mech->add_header(
-		'Content-Type' => 'application/x-www-form-urlencoded',
+        'Content-Type' => 'application/x-www-form-urlencoded',
         'Key'          => $self->{key},
         'Sign'         => $signature,
     );
@@ -219,8 +223,6 @@ sub _handle_response {
 
     my $mech = $self->{mech};
 
-    $log->debug($mech->text());
-    $log->debug($response->is_success);
     unless ($response->is_success) {
         $log->debug($mech->text());
         my $r = from_json($mech->text);

@@ -54,12 +54,20 @@ sub BUILD {
     $self->{mech}->proxy(['ftp', 'http', 'https'] => $proxy) if ($proxy);
 
     $self->{mech}->add_header(
-		'Content-Type' => 'application/x-www-form-urlencoded',
+        'Content-Type' => 'application/x-www-form-urlencoded',
         'X-MBX-APIKEY' => $self->{key},
     );
     
     return $self; 
 }
+
+# Return name of exchange
+sub name {
+    return 'Binance';
+}
+
+# Returns all of your balances, including available, on orders, 
+# and the estimated BTC value of your balance
 
 sub getBalances () {
     my $self = shift;

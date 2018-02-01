@@ -410,29 +410,39 @@ sub getBalances ($) {
     my $self = shift;
     my $exchange = shift;
 
+    $exchange = [$exchange] unless (ref $exchange eq 'ARRAY');
+
     my $crypto_compare = API::CryptoCompare->new();
     my $btcusd = $crypto_compare->get('price', {fsym => 'BTC', tsyms => 'USD'})->{USD};
 
-    my $balances = $exchange->getBalances();
-
-    my $total_btc = 0;
-    map {$total_btc += $_->{btc_value} if (defined $_->{btc_value})} @$balances;
-
+    my $grant_total;
     my $header = ['Coin', 'Total', 'On Orders', 'Available', 'BTC Value', 'Weight'];
     my $data;
-    foreach (@$balances) {
-        my $row = [
-            $_->{coin},
-            $_->{total},
-            $_->{locked},
-            $_->{available},
-            $_->{btc_value},
-            sprintf("%.2f%%", $_->{btc_value}/$total_btc*100),
-        ];
-        push @$data, $row;
+    foreach my $e (@$exchange) {
+        my $group = {name => $e->name};
+
+        my $balances = $e->getBalances();
+
+        my $total_btc = 0;
+        map {$total_btc += $_->{btc_value} if (defined $_->{btc_value})} @$balances;
+
+        foreach (@$balances) {
+            push @{ $group->{data} }, [
+                $_->{coin},
+                $_->{total},
+                $_->{locked},
+                $_->{available},
+                $_->{btc_value},
+                sprintf("%.2f%%", $_->{btc_value}/$total_btc*100),
+            ];
+        }
+        $group->{total} = sprintf("Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $total_btc, $total_btc);
+        push @$data, $group;
+
+        $grant_total += $total_btc;
     }
 
-    my $total = sprintf("Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $total_btc, $total_btc);
+    my $total = sprintf("Grant Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $grant_total, $grant_total) if (@$exchange > 1);
 
     $self->print_table($header, $data, $total);
 }
@@ -480,9 +490,10 @@ sub print_table ($$;$) {
         printf('-' x $width . "\n" . "$format->{header}\n" . '-' x $width . "\n", @$header);
         printf("$format->{body}\n", @$_) for (@{ $group->{data} });
         print '-' x $width . "\n\n";
+        print "$group->{total}\n" if ($group->{total});
     }
 
-    print "$total\n" if ($total);
+    print "\n$total\n" if ($total);
 }
 
 1;

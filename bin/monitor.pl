@@ -77,12 +77,12 @@ $GO->{SCRIPT} = {
         'exchange|e=s' => {
             info      => 'Name of exchange',
             default   => 'poloniex',
-            pattern   => '/^poloniex|binance$/',
+            pattern   => '/^poloniex|binance|all$/',
         },
         'command|c=s' => {
             info      => 'Name of command',
             mandatory => 1,
-            default   => 'balances',
+            default   => 'balance',
         },
         'market=s' => {
             info      => 'Currency pair',
@@ -102,7 +102,7 @@ $GO->{SCRIPT} = {
         },
     },
     examples    => [
-        "$Script -e poloniex -c balances",
+        "$Script -e poloniex -c balance",
         "$Script -e poloniex -c orders",
         "$Script -e poloniex -c history -m BTC_BCN --start '2018-01-09'",
         "$Script -e poloniex -c trade",
@@ -122,7 +122,9 @@ $log->level($DEBUG) if ($options->{debug});
 $log->debug("$Script called. Options are:\n" . Dumper($options));
 
 my $exchange;
-if ($options->{exchange} eq 'poloniex') {
+if ($options->{exchange} eq 'all' and ($options->{command} eq 'balance')) {
+    $exchange = [API::Poloniex->new(), API::Binance->new()];
+} elsif ($options->{exchange} eq 'poloniex') {
     $exchange = API::Poloniex->new();
 } elsif ($options->{exchange} eq 'binance') {
     $exchange = API::Binance->new();
@@ -132,9 +134,7 @@ if ($options->{exchange} eq 'poloniex') {
 
 # Dispatching
 my $strategy = Strategy::BuyLowSellHigh->new();
-if ($options->{command} eq 'balances') {
-    $strategy->getBalances($exchange);
-    $exchange = API::Binance->new();
+if ($options->{command} eq 'balance') {
     $strategy->getBalances($exchange);
 } elsif ($options->{command} eq 'orders') {
     $strategy->getOpenOrders($exchange);
@@ -146,7 +146,7 @@ if ($options->{command} eq 'balances') {
     Util::Config::usage('Start Price must be defined') if (!$options->{'start-price'});
     $strategy->calculateOrderList($options->{'start-price'});
 } elsif ($options->{command} eq 'test') {
-	print Dumper \%INC;
+    print Dumper \%INC;
 } else {
     die("Unsupported command\n");
 }
