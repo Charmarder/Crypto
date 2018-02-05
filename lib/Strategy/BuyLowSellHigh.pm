@@ -58,8 +58,9 @@ sub calculateOrderList ($;$) {
 
 
 # Calculate Buy/Sell Average Price, Total Amount and Toral Sum, as well Amount Rest and Profit/Lost
-sub getAnalysis {
+sub getAnalysis ($$) {
     my $self         = shift;
+    my $market       = shift;
     my $transactions = shift;
 
     my $analysis = {
@@ -76,9 +77,8 @@ sub getAnalysis {
         },
         amount_rest => 0,
         profit_lost => 0,
-        can_trade   => 0,
-        new_sell    => {},
-        new_buy     => {},
+        take_profit => 0,
+        ROI         => 0,
     };
 
     foreach (@$transactions) {
@@ -101,27 +101,29 @@ sub getAnalysis {
     $analysis->{amount_rest} = $analysis->{buy}->{amount} - $analysis->{sell}->{amount};
     $analysis->{profit_lost} = $analysis->{sell}->{sum} - $analysis->{buy}->{sum};
 
+    $analysis->{take_profit} = get_config_value('TakeProfit', $market);
+    $analysis->{ROI} = get_config_value('ROI');
+
+
     return $analysis;
 }
 
 # Return parameters for new sell order
 sub calculateSell {
     my $self      = shift;
-    my $market    = shift;
-    my $buy_price = shift;
-    my $buy_sum   = shift;
-    my $sell_sum  = shift;
+    my $analysis  = shift;
+
+    my $buy_price   = $analysis->{buy}->{price};
+    my $buy_sum     = $analysis->{buy}->{sum};
+    my $sell_sum    = $analysis->{sell}->{sum};
+    my $take_profit = $analysis->{take_profit};
+    my $ROI         = $analysis->{ROI};
 
     my $new_sell;
-
-    my $take_profit = get_config_value('TakeProfit', $market);
-    my $ROI = get_config_value('ROI');
 
     $new_sell->{price} = $buy_price * (1 + $take_profit);
     $new_sell->{sum} = ($buy_sum * (1 + $ROI) - $sell_sum)  / 0.9985;
     $new_sell->{amount} = $new_sell->{sum} / $new_sell->{price};
-    $new_sell->{take_profit} = $take_profit;
-    $new_sell->{ROI} = $ROI;
 
     return $new_sell;
 }
@@ -213,14 +215,13 @@ sub trade ($;$) {
 
         print '-' x length($market) . "\n$market\n" . '-' x length($market) . "\n";
 
-        my $analysis = $self->getAnalysis(\@trans);
+        my $analysis = $self->getAnalysis($market, \@trans);
         $log->debug(Dumper $analysis);
 
         my $new_sell;
         if ($analysis->{profit_lost} < 0) {
             # Get parameters for new sell order (Price, Amount and Sum)
-            $new_sell = $self->calculateSell($market, 
-                $analysis->{buy}->{price}, $analysis->{buy}->{sum}, $analysis->{sell}->{sum});
+            $new_sell = $self->calculateSell($analysis);
             $log->debug(Dumper $new_sell);
 
             # Step 1: Cancel old sell order if exist and create new one if not exist
@@ -235,8 +236,8 @@ sub trade ($;$) {
                     if (@sell_orders) {
                         # Cancel old sell order
                         my $o = $sell_orders[0];
-                        $log->info("Cancel old Sell order $o->{orderNumber}");
-                        my $rs = $exchange->trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
+                        $log->info("Cancel old Sell order $o->{order_id}");
+                        my $rs = $exchange->trading_api('cancelOrder', { orderNumber => $o->{order_id} });
                         $log->info(Dumper $rs) if $rs;
                     }
 
@@ -257,7 +258,7 @@ sub trade ($;$) {
             }
 
             # Get parameters for new buy order (Price, Amount and Sum)
-            my $new_buy = $self->calculateBuy($market, \@trans, $market_orders, $analysis);
+            my $new_buy = $self->calculateBuy($market, \@trans, $market_orders);
             $log->debug(Dumper $new_buy);
 
             # Step 2: Create new buy orders
@@ -273,25 +274,25 @@ sub trade ($;$) {
         } else {
             # Cances all orders
             foreach my $o (@{ $orders->{$market} }) {
-                $log->info("Cancel order $o->{orderNumber}");
-                my $rs = $exchange->trading_api('cancelOrder', { orderNumber => $o->{orderNumber} });
+                $log->info("Cancel order $o->{order_id}");
+                my $rs = $exchange->trading_api('cancelOrder', { orderNumber => $o->{order_id} });
                 $log->info(Dumper $rs) if $rs;
             }
         }
 
 
         if ($analysis->{buy}->{sum}) {
-            printf("Total Buy (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n", 
+            printf("Total Buy (Price Amount Sum): %.8f, %.8f, %.8f\n", 
                 $analysis->{buy}->{price}, $analysis->{buy}->{amount}, $analysis->{buy}->{sum});
         }
         if ($analysis->{sell}->{sum}) {
-            printf("Total Sell (Price Amount Sum):\t%.8f\t%.8f\t%.8f\n",
+            printf("Total Sell (Price Amount Sum): %.8f, %.8f, %.8f\n",
                 $analysis->{sell}->{price}, $analysis->{sell}->{amount}, $analysis->{sell}->{sum_with_fee});
         }
         
         my $msg = ($analysis->{profit_lost} > 0) ? 'You have earned' : 'Amount Rest';
         printf("Take Profit: %d%%, ROI: %d%%, $msg: %.8f, Profit/Lost: %.8f\n\n", 
-            $new_sell->{take_profit} * 100, $new_sell->{ROI} * 100,
+            $analysis->{take_profit} * 100, $analysis->{ROI} * 100,
             $analysis->{amount_rest}, $analysis->{profit_lost}
         );
 
@@ -300,16 +301,16 @@ sub trade ($;$) {
         }
 
         # Get open orders for market and print
-        my $orders = $exchange->trading_api( 'returnOpenOrders', { currencyPair => $market } );
-        my $header = ['OrderNumber', 'Type', 'Price', 'Amount', 'StartingAmount', 'Total', 'Date'];
+        my $orders = $exchange->getOpenOrders($market);
+        my $header = ['OrderID', 'Type', 'Price', 'Amount', 'Filled%', 'Total', 'Date'];
         my $data = [];
-        foreach ( sort {$b->{rate} <=> $a->{rate}} @$orders ) {
+        foreach (@$orders) {
             push @$data, [
-                $_->{orderNumber},
+                $_->{order_id},
                 $_->{type},
                 $_->{rate},
                 $_->{amount},
-                $_->{startingAmount},
+                $_->{filled},
                 $_->{total},
                 $_->{date},
             ];
@@ -318,7 +319,7 @@ sub trade ($;$) {
 
         # Print history for market
         $header = 
-          ['OrderNumber', 'Market', 'Type', 'Price', 'Amount', 'Fee', 'Total', 'Date', 'TradeID', 'GlobalTradeID'];
+          ['OrderID', 'Market', 'Type', 'Price', 'Amount', 'Fee', 'Total', 'Date', 'TradeID'];
         $data = [];
         foreach (sort {$a->{date} cmp $b->{date}} @trans) {
                 push @$data, [
@@ -331,7 +332,6 @@ sub trade ($;$) {
                     $_->{total},
                     $_->{date},
                     $_->{tradeID},
-                    $_->{globalTradeID},
                 ];
         }
         $self->print_table($header, $data);
@@ -357,7 +357,7 @@ sub getTradeHistory ($;$) {
     }
 
     my $header = 
-      ['OrderNumber', 'Market', 'Type', 'Price', 'Amount', 'Fee', 'Total', 'Date', 'TradeID', 'GlobalTradeID'];
+      ['OrderID', 'Market', 'Type', 'Price', 'Amount', 'Fee', 'Total', 'Date', 'TradeID'];
     my $data;
     foreach (sort {$a->{date} cmp $b->{date}} @trans) {
             push @$data, [
@@ -370,7 +370,6 @@ sub getTradeHistory ($;$) {
                 $_->{total},
                 $_->{date},
                 $_->{tradeID},
-                $_->{globalTradeID},
             ];
     }
     $self->print_table($header, $data);
@@ -382,19 +381,20 @@ sub getOpenOrders ($) {
     my $exchange = shift;
 
     my $rs = $exchange->getOpenOrders();
+#    $log->error(Dumper $rs);
     my @markets = grep scalar @{ $rs->{$_} }, sort keys %$rs;
     
-    my $header = ['OrderNumber', 'Type', 'Price', 'Amount', 'StartingAmount', 'Total', 'Date'];
+    my $header = ['OrderID', 'Type', 'Price', 'Amount', 'Filled%', 'Total', 'Date'];
     my $data;
     foreach my $market (@markets) {
         my $group = {name => $market};  #TODO add current price
         foreach ( @{ $rs->{$market} } ) {
             push @{ $group->{data} }, [
-                $_->{orderNumber},
+                $_->{order_id},
                 $_->{type},
                 $_->{rate},
                 $_->{amount},
-                $_->{startingAmount},
+                $_->{filled},
                 $_->{total},
                 $_->{date},
             ];
@@ -415,8 +415,8 @@ sub getBalances ($) {
     my $crypto_compare = API::CryptoCompare->new();
     my $btcusd = $crypto_compare->get('price', {fsym => 'BTC', tsyms => 'USD'})->{USD};
 
-    my $grant_total;
-    my $header = ['Coin', 'Total', 'On Orders', 'Available', 'BTC Value', 'Weight'];
+    my $grant_total_btc;
+    my $header = ['Coin', 'Total', 'Available', 'On Orders', 'BTC Value', 'USD Value', 'Weight'];
     my $data;
     foreach my $e (@$exchange) {
         my $group = {name => $e->name};
@@ -430,19 +430,32 @@ sub getBalances ($) {
             push @{ $group->{data} }, [
                 $_->{coin},
                 $_->{total},
-                $_->{locked},
                 $_->{available},
+                $_->{locked},
                 $_->{btc_value},
+                sprintf("%.2f", $_->{btc_value} * $btcusd),
                 sprintf("%.2f%%", $_->{btc_value}/$total_btc*100),
             ];
         }
-        $group->{total} = sprintf("Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $total_btc, $total_btc);
+        my $invested_usd = get_config_value('invested_usd', $e->name);
+        my $invested_btc = get_config_value('invested_btc', $e->name);
+        $group->{total} = sprintf("Total Balance: %.2f USD (%.2f%%) / %.8f BTC (%.2f%%)\n", 
+            $btcusd * $total_btc, ($btcusd * $total_btc / $invested_usd - 1) * 100,
+            $total_btc, ($total_btc / $invested_btc - 1) * 100);
         push @$data, $group;
 
-        $grant_total += $total_btc;
+        $grant_total_btc += $total_btc;
     }
 
-    my $total = sprintf("Grant Total Balance: %.2f USD / %.8f BTC\n", $btcusd * $grant_total, $grant_total) if (@$exchange > 1);
+    my $total;
+    if (@$exchange > 1) {
+        my $grant_total_usd = $btcusd * $grant_total_btc;
+        my $invested_usd = get_config_value('invested_usd', 'All');
+        my $invested_btc = get_config_value('invested_btc', 'All');
+        $total = sprintf("Grant Total Balance: %.2f USD (%.2f%%) / %.8f BTC (%.2f%%), BTC/USD: %.2f\n", 
+            $grant_total_usd, ($grant_total_usd / $invested_usd - 1) * 100,
+            $grant_total_btc, ($grant_total_btc / $invested_btc - 1) * 100, $btcusd);
+    }
 
     $self->print_table($header, $data, $total);
 }

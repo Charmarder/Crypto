@@ -89,14 +89,37 @@ sub getTradeHistory ($) {
     }
 }
 
-# Returns your open orders for a given market, specified by the "currencyPair" POST parameter, e.g.
-# "BTC_XCP". Set "currencyPair" to "all" to return open orders for all markets.
+# Returns your open orders for a given market, specified by the "currencyPair" POST parameter
+# Set "currencyPair" to "all" to return open orders for all markets.
 sub getOpenOrders () {
-    my $self = shift;
+    my $self   = shift;
+    my $market = shift || 'all';
 
-    my $rs = $self->trading_api('returnOpenOrders', {currencyPair => 'all'});
+    my $rs = $self->trading_api('returnOpenOrders', {currencyPair => $market});
+    $rs = {$market => $rs} if ($market ne 'all');
 
-    return $rs;
+    my $orders;
+    foreach my $market (keys %$rs) {
+        foreach ( sort {$b->{rate} <=> $a->{rate}} @{ $rs->{$market} } ) {
+            push @{ $orders->{$market} }, {
+                order_id => $_->{orderNumber},
+                type     => $_->{type},
+                rate     => $_->{rate},
+                amount   => $_->{startingAmount},
+                filled   => sprintf("%.2f%%", ($_->{startingAmount} - $_->{amount}) / $_->{startingAmount} * 100),
+                total    => $_->{total},
+                date     => $_->{date},
+            };
+        }
+    }
+#    $log->error(Dumper $orders);
+#    exit;
+    
+    if ($market eq 'all') {
+        return $orders;
+    } else {
+        return $orders->{$market};
+    }
 }
 
 # Returns all of your balances, including available, on orders, 

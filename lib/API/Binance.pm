@@ -31,6 +31,7 @@ use Time::HiRes qw(time);
 use Digest::SHA qw(hmac_sha256_hex);
 use JSON;
 use Date::Parse qw(str2time);
+use DateTime;
 
 
 has 'mech'     => (is => 'rw', isa => 'Str');
@@ -66,9 +67,68 @@ sub name {
     return 'Binance';
 }
 
+# Returns your trade history
+sub getTradeHistory ($) {
+    my $self = shift;
+    my $options = shift;
+
+    my $open_orders = $self->_get_endpoint('v3/openOrders', 1);
+    my $markets = { map { $_->{symbol} => 1 } @$open_orders };
+    
+    my $trans;
+    foreach my $market (keys %$markets) {
+        my $rs = $self->_get_endpoint('v3/allOrders', 1, {symbol => $market});
+        my $filled_orders = { map {$_->{orderId} => $_} grep $_->{status} eq 'FILLED', @$rs };
+        my $trades = $self->_get_endpoint('v3/myTrades', 1, {symbol => $market});
+        map {
+            my $dt = DateTime->from_epoch(epoch => $_->{time} / 1000);
+            push @{ $trans->{$market} },
+              {
+                orderNumber => $_->{orderId},
+                market      => $market,
+                type        => $filled_orders->{ $_->{orderId} }->{side},
+                rate        => $_->{price},
+                amount      => $_->{qty},
+                fee         => '0.00100000',
+                total       => sprintf("%.8f", $_->{price} * $_->{qty}),
+                date        => $dt->ymd . ' ' . $dt->hms . '.' . sprintf("%03d", $dt->millisecond),
+                tradeID     => $_->{id},
+              }
+        } sort {$a->{time} <=> $b->{time}} @$trades;
+    }
+
+    return $trans;
+}
+
+# Get all open orders
+sub getOpenOrders () {
+    my $self = shift;
+
+    my $rs = $self->_get_endpoint('v3/openOrders', 1);
+
+    my $orders;
+    map {
+        my $market = $_->{symbol};
+        my $dt = DateTime->from_epoch( epoch => $_->{time}/1000 );
+        push @{ $orders->{$market} }, {
+            order_id => $_->{orderId},
+            type     => $_->{side},
+            rate     => $_->{price},
+            amount   => $_->{origQty},
+            filled   => sprintf("%.2f%%", $_->{executedQty} / $_->{origQty} * 100),
+            total    => sprintf("%.8f", $_->{price} * $_->{origQty}),
+            date     => $dt->ymd . ' ' .  $dt->hms . '.' . sprintf("%03d", $dt->millisecond),
+        }
+    } sort {$a->{symbol} cmp $b->{symbol} || $b->{price} <=> $a->{price}} @$rs;
+#    $log->error(Dumper $orders);
+#    exit;
+
+    return $orders;
+}
+
+
 # Returns all of your balances, including available, on orders, 
 # and the estimated BTC value of your balance
-
 sub getBalances () {
     my $self = shift;
 
@@ -85,7 +145,7 @@ sub getBalances () {
             total     => sprintf("%.8f", $_->{free} + $_->{locked}),
             btc_value => sprintf("%.8f", $price * ($_->{free} + $_->{locked})),
         }
-    } grep $_->{free} > 0 || $_->{locked} > 0, @{ $rs->{balances} };
+    } sort {$a->{asset} cmp $b->{asset}} grep $_->{free} > 0 || $_->{locked} > 0, @{ $rs->{balances} };
 
     return \@balances;
 }
