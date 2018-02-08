@@ -138,6 +138,7 @@ sub getBalances () {
     $rs = $self->_get_endpoint('v3/account', 1);
     my @balances = map {
         my $price = ($_->{asset} eq 'BTC') ? 1 : $prices->{"$_->{asset}BTC"};
+        $price = ${ $self->_get_endpoint('v3/ticker/price', 0, { symbol => "$_->{asset}BTC" }) }{price} unless ($price);
         {
             coin      => $_->{asset},
             locked    => $_->{locked},
