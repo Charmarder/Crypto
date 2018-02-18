@@ -39,6 +39,8 @@ has 'base_url' => (is => 'rw', isa => 'Str');
 has 'key'      => (is => 'rw', isa => 'Str');
 has 'secret'   => (is => 'rw', isa => 'Str');
 
+has 'accountInfo' => (is => 'rw', isa => 'Str');
+
 sub BUILD { 
     my ($self, $args) = @_;  
 
@@ -67,6 +69,66 @@ sub name {
     return 'Binance';
 }
 
+# Get taker and maker fees
+sub getFees {
+    my $self   = shift;
+
+#    my $account;
+#    if ($self->{accountInfo}) {
+#        $account = $self->{accountInfo};
+#    } else {
+#        $account = $self->_get_endpoint('v3/account', 1);
+#    }
+#    my $fees = {
+#        taker => $account->{takerCommission} / 10000,
+#        maker => $account->{makerCommission} / 10000,
+#    };
+    
+    my $fees = {
+        taker => get_config_value('takerFee', $self->name),
+        maker => get_config_value('makerFee', $self->name),
+    };
+
+    return $fees;
+}
+
+
+# Get precision of price and amount for market
+sub getPrecision {
+    my $self   = shift;
+    my $market = shift;
+    
+    my $symbol = $market;
+    $symbol =~ s/^(\w{3})_(\w+)$/$2$1/;
+
+    my $exchange_info = $self->_get_endpoint('v1/exchangeInfo');
+    my $symbol_info = [ grep $_->{symbol} eq $symbol, @{ $exchange_info->{symbols} } ]->[0];
+
+    my $price_filter = [ grep $_->{filterType} eq 'PRICE_FILTER', @{ $symbol_info->{filters} } ]->[0];
+    my $lot_size = [ grep $_->{filterType} eq 'LOT_SIZE', @{ $symbol_info->{filters} } ]->[0];
+    
+    my $precisions = {price => index($price_filter->{minPrice}, 1) - 1, amount => index($lot_size->{minQty}, 1) - 1};
+
+    return $precisions;
+}
+
+# Cancels an order
+sub cancelOrder ($) {
+    my $self     = shift;
+    my $order_id = shift;
+
+    return;
+}
+
+# Places a buy/sell order in a given market.
+sub createOrder ($$) {
+    my $self   = shift;
+    my $type   = shift;
+    my $params = shift;
+
+    return;
+}
+
 # Returns your trade history
 sub getTradeHistory ($) {
     my $self = shift;
@@ -80,16 +142,20 @@ sub getTradeHistory ($) {
         my $rs = $self->_get_endpoint('v3/allOrders', 1, {symbol => $market});
         my $filled_orders = { map {$_->{orderId} => $_} grep $_->{status} eq 'FILLED', @$rs };
         my $trades = $self->_get_endpoint('v3/myTrades', 1, {symbol => $market});
+        $market =~ s/^(\w+)(\w{3})$/$2_$1/;
         map {
             my $dt = DateTime->from_epoch(epoch => $_->{time} / 1000);
+            my $type = $filled_orders->{ $_->{orderId} }->{side};
+            my $fee = $type eq 'BUY' ? $_->{commission} / $_->{qty} : $_->{commission} / ($_->{price} * $_->{qty});
             push @{ $trans->{$market} },
               {
                 orderNumber => $_->{orderId},
                 market      => $market,
-                type        => $filled_orders->{ $_->{orderId} }->{side},
-                rate        => $_->{price},
+                type        => lc $type,
+                price       => $_->{price},
                 amount      => $_->{qty},
-                fee         => '0.00100000',
+                fee         => sprintf("%.4f", $fee),
+                fee_all     => sprintf("%.8f %s (%.2f)", $_->{commission}, $_->{commissionAsset}, $fee * 100),
                 total       => sprintf("%.8f", $_->{price} * $_->{qty}),
                 date        => $dt->ymd . ' ' . $dt->hms . '.' . sprintf("%03d", $dt->millisecond),
                 tradeID     => $_->{id},
@@ -102,18 +168,27 @@ sub getTradeHistory ($) {
 
 # Get all open orders
 sub getOpenOrders () {
-    my $self = shift;
-
-    my $rs = $self->_get_endpoint('v3/openOrders', 1);
+    my $self   = shift;
+    my $market = shift;
+    
+    my $rs;
+    if ($market) {
+        my $symbol = $market;
+        $symbol =~ s/^(\w{3})_(\w+)$/$2$1/;
+        $rs = $self->_get_endpoint('v3/openOrders', 1, { symbol => $symbol });
+    } else {
+        $rs = $self->_get_endpoint('v3/openOrders', 1);
+    }
 
     my $orders;
     map {
         my $market = $_->{symbol};
+        $market =~ s/^(\w+)(\w{3})$/$2_$1/;
         my $dt = DateTime->from_epoch( epoch => $_->{time}/1000 );
         push @{ $orders->{$market} }, {
             order_id => $_->{orderId},
-            type     => $_->{side},
-            rate     => $_->{price},
+            type     => lc $_->{side},
+            price    => $_->{price},
             amount   => $_->{origQty},
             filled   => sprintf("%.2f%%", $_->{executedQty} / $_->{origQty} * 100),
             total    => sprintf("%.8f", $_->{price} * $_->{origQty}),
@@ -123,7 +198,11 @@ sub getOpenOrders () {
 #    $log->error(Dumper $orders);
 #    exit;
 
-    return $orders;
+    if ($market) {
+        return $orders->{$market};
+    } else {
+        return $orders;
+    }
 }
 
 

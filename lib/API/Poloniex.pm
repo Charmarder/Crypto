@@ -40,6 +40,8 @@ has 'trading_url' => (is => 'rw', isa => 'Str');
 has 'key'         => (is => 'rw', isa => 'Str');
 has 'secret'      => (is => 'rw', isa => 'Str');
 
+has 'feeInfo'     => (is => 'rw', isa => 'Str');
+
 sub BUILD { 
     my ($self, $args) = @_;  
 
@@ -62,6 +64,58 @@ sub name {
     return 'Poloniex';
 }
 
+# Get taker and maker fees
+sub getFees {
+    my $self = shift;
+
+    my $fees;
+    if ($self->{feeInfo}) {
+        $fees = $self->{feeInfo};
+    } else {
+        $fees = $self->trading_api('returnFeeInfo');
+    }
+
+    return {taker => $fees->{takerFee}, maker => $fees->{makerFee} };
+}
+
+# Get precision of price and amount for market
+sub getPrecision {
+    my $self   = shift;
+    my $market = shift;
+
+    return {price => 8, amount => 8};
+}
+
+# Cancels an order
+sub cancelOrder ($) {
+    my $self     = shift;
+    my $order_id = shift;
+
+    my $rs = $self->trading_api('cancelOrder', { orderNumber => $order_id });
+    $log->info(Dumper $rs) if $rs;
+    return $rs;
+}
+
+# Places a buy/sell order in a given market.
+sub createOrder ($$) {
+    my $self   = shift;
+    my $type   = shift;
+    my $params = shift;
+
+#    $log->info("Create new " . uc $type . " order: $params->{price} $params->{amount}");
+    my $rs = $self->trading_api($type,
+        {
+            currencyPair => $params->{market},
+            rate         => $params->{price},
+            amount       => $params->{amount},
+            postOnly     => 1,
+        }
+    );
+    $log->info(Dumper $rs) if $rs;
+
+    return $rs;
+}
+
 # Returns your trade history for a given market, specified by the "currencyPair" POST parameter.
 # You may specify "all" as the currencyPair to receive your trade history for all markets. You may
 # optionally specify a range via "start" and/or "end" POST parameters, given in UNIX timestamp
@@ -82,11 +136,19 @@ sub getTradeHistory ($) {
     $params->{currencyPair} = $options->{market} ? $options->{market} : 'all';
 
     my $rs = $self->trading_api('returnTradeHistory', $params);
-    if ($options->{market}) {
-        return {$options->{market} => $rs};
-    } else {
-        return $rs;
+    $rs = {$options->{market} => $rs} if ($options->{market});
+
+    foreach my $market (keys %$rs) {
+        foreach (@{ $rs->{$market} }) {
+            my $commission = $_->{type} eq 'buy' ? $_->{amount} * $_->{fee} : $_->{total} * $_->{fee};
+            my ($commission_asset) = ($market =~ /_(\w+)$/);
+            $_->{fee_all} = sprintf("%.8f %s (%.2f)", $commission, $commission_asset, $_->{fee} * 100);
+            $_->{price} = $_->{rate};
+            delete $_->{rate};
+        }
     }
+
+    return $rs;
 }
 
 # Returns your open orders for a given market, specified by the "currencyPair" POST parameter
@@ -104,7 +166,7 @@ sub getOpenOrders () {
             push @{ $orders->{$market} }, {
                 order_id => $_->{orderNumber},
                 type     => $_->{type},
-                rate     => $_->{rate},
+                price    => $_->{rate},
                 amount   => $_->{startingAmount},
                 filled   => sprintf("%.2f%%", ($_->{startingAmount} - $_->{amount}) / $_->{startingAmount} * 100),
                 total    => $_->{total},
@@ -112,8 +174,6 @@ sub getOpenOrders () {
             };
         }
     }
-#    $log->error(Dumper $orders);
-#    exit;
     
     if ($market eq 'all') {
         return $orders;
