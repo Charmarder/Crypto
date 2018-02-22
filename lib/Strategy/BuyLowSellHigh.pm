@@ -135,9 +135,11 @@ sub calculateSell {
 # Return parameters for new buy orders
 sub calculateBuy ($$$) {
     my $self     = shift;
-    my $market   = shift;
+    my $analysis = shift;
     my $trades   = shift;
     my $orders   = shift;
+
+    my $market = $analysis->{market};
 
     my $buy_orders = [grep $_->{type} eq 'buy', @$orders];
     my $new_buy;
@@ -162,14 +164,16 @@ sub calculateBuy ($$$) {
     my @buys;
     my $price_step = get_config_value('PriceStep', $market);
     my $amount_step = get_config_value('AmountStep', $market);
-    my $step_number = int(50/($price_step*100));
-    for (my $i = 0; $i < $step_number; $i++) {
+    my $max_steps = int(50/($price_step*100));
+    my $precision_price  = $analysis->{precisions}->{price};
+    my $precision_amount = $analysis->{precisions}->{amount};
+    for (my $i = 0; $i < $max_steps; $i++) {
         my $price = $start_price * (1 -  $price_step * $i);
         my $amount = $start_amount * (1 + $amount_step) ** $i;
         push @buys, {
             market => $market,
-            price  => sprintf("%.8f", $price),
-            amount => sprintf("%.8f", $amount),
+            price  => sprintf("%.${precision_price}f", $price),
+            amount => sprintf("%.${precision_amount}f", $amount),
         };
     }
 
@@ -241,7 +245,7 @@ sub trade ($;$) {
                         # Cancel old sell order
                         my $o = $sell_orders[0];
                         $log->info("Cancel old Sell order $o->{order_id}");
-                        $exchange->cancelOrder($o->{order_id});
+                        $exchange->cancelOrder($o->{order_id}, $market);
                     }
 
                     # Create new Sell order
@@ -254,7 +258,7 @@ sub trade ($;$) {
             }
 
             # Get parameters for new buy order (Price, Amount and Sum)
-            my $new_buy = $self->calculateBuy($market, \@trades, $market_orders);
+            my $new_buy = $self->calculateBuy($analysis, \@trades, $market_orders);
             $log->debug(Dumper $new_buy);
 
             # Step 2: Create new buy orders
@@ -268,7 +272,7 @@ sub trade ($;$) {
             # Cances all orders
             foreach my $o (@{ $orders->{$market} }) {
                 $log->info("Cancel order $o->{order_id}");
-                my $rs = $exchange->cancelOrder($o->{order_id});
+                my $rs = $exchange->cancelOrder($o->{order_id}, $market);
                 $log->info(Dumper $rs) if $rs;
             }
         }

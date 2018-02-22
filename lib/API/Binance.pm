@@ -32,6 +32,7 @@ use Digest::SHA qw(hmac_sha256_hex);
 use JSON;
 use Date::Parse qw(str2time);
 use DateTime;
+use Tie::IxHash;
 
 
 has 'mech'     => (is => 'rw', isa => 'Str');
@@ -77,7 +78,7 @@ sub getFees {
 #    if ($self->{accountInfo}) {
 #        $account = $self->{accountInfo};
 #    } else {
-#        $account = $self->_get_endpoint('v3/account', 1);
+#        $account = $self->_get('v3/account', 1);
 #    }
 #    my $fees = {
 #        taker => $account->{takerCommission} / 10000,
@@ -101,7 +102,7 @@ sub getPrecision {
     my $symbol = $market;
     $symbol =~ s/^(\w{3})_(\w+)$/$2$1/;
 
-    my $exchange_info = $self->_get_endpoint('v1/exchangeInfo');
+    my $exchange_info = $self->_get('v1/exchangeInfo');
     my $symbol_info = [ grep $_->{symbol} eq $symbol, @{ $exchange_info->{symbols} } ]->[0];
 
     my $price_filter = [ grep $_->{filterType} eq 'PRICE_FILTER', @{ $symbol_info->{filters} } ]->[0];
@@ -116,8 +117,15 @@ sub getPrecision {
 sub cancelOrder ($) {
     my $self     = shift;
     my $order_id = shift;
+    my $market   = shift;
+    
+    my $symbol = $market;
+    $symbol =~ s/^(\w{3})_(\w+)$/$2$1/;
 
-    return;
+    my $rs = $self->_delete('v3/order', 1, { symbol => $symbol, orderId => $order_id });
+    $log->info(Dumper $rs) if $rs;
+
+    return $rs;
 }
 
 # Places a buy/sell order in a given market.
@@ -126,7 +134,22 @@ sub createOrder ($$) {
     my $type   = shift;
     my $params = shift;
 
-    return;
+    my $symbol = $params->{market};
+    $symbol =~ s/^(\w{3})_(\w+)$/$2$1/;
+
+    my $rs = $self->_post('v3/order', 1,
+        {
+            symbol      => $symbol,
+            side        => uc $type,
+            type        => 'LIMIT',
+            timeInForce => 'GTC',
+            quantity    => $params->{amount},
+            price       => $params->{price}
+        }
+    );
+    $log->info(Dumper $rs) if $rs;
+
+    return $rs;
 }
 
 # Returns your trade history
@@ -134,14 +157,14 @@ sub getTradeHistory ($) {
     my $self = shift;
     my $options = shift;
 
-    my $open_orders = $self->_get_endpoint('v3/openOrders', 1);
+    my $open_orders = $self->_get('v3/openOrders', 1);
     my $markets = { map { $_->{symbol} => 1 } @$open_orders };
     
     my $trans;
     foreach my $market (keys %$markets) {
-        my $rs = $self->_get_endpoint('v3/allOrders', 1, {symbol => $market});
+        my $rs = $self->_get('v3/allOrders', 1, {symbol => $market});
         my $filled_orders = { map {$_->{orderId} => $_} grep $_->{status} eq 'FILLED', @$rs };
-        my $trades = $self->_get_endpoint('v3/myTrades', 1, {symbol => $market});
+        my $trades = $self->_get('v3/myTrades', 1, {symbol => $market});
         $market =~ s/^(\w+)(\w{3})$/$2_$1/;
         map {
             my $dt = DateTime->from_epoch(epoch => $_->{time} / 1000);
@@ -175,9 +198,9 @@ sub getOpenOrders () {
     if ($market) {
         my $symbol = $market;
         $symbol =~ s/^(\w{3})_(\w+)$/$2$1/;
-        $rs = $self->_get_endpoint('v3/openOrders', 1, { symbol => $symbol });
+        $rs = $self->_get('v3/openOrders', 1, { symbol => $symbol });
     } else {
-        $rs = $self->_get_endpoint('v3/openOrders', 1);
+        $rs = $self->_get('v3/openOrders', 1);
     }
 
     my $orders;
@@ -211,13 +234,13 @@ sub getOpenOrders () {
 sub getBalances () {
     my $self = shift;
 
-    my $rs = $self->_get_endpoint('v3/ticker/price');
+    my $rs = $self->_get('v3/ticker/price');
     my $prices = {map {$_->{symbol} => $_->{price}} @$rs};
 
-    $rs = $self->_get_endpoint('v3/account', 1);
+    $rs = $self->_get('v3/account', 1);
     my @balances = map {
         my $price = ($_->{asset} eq 'BTC') ? 1 : $prices->{"$_->{asset}BTC"};
-        $price = ${ $self->_get_endpoint('v3/ticker/price', 0, { symbol => "$_->{asset}BTC" }) }{price} unless ($price);
+        $price = ${ $self->_get('v3/ticker/price', 0, { symbol => "$_->{asset}BTC" }) }{price} unless ($price);
         {
             coin      => $_->{asset},
             locked    => $_->{locked},
@@ -231,57 +254,90 @@ sub getBalances () {
 }
 
 # Send GET request to Binance Public Rest API
-# For GET endpoints, parameters will be sent as a query string
-sub _get_endpoint ($;$$) {
+sub _get ($;$$) {
     my $self   = shift;
     my $path   = shift;
-    my $signed = shift || 0;
-    my $params = shift || {};
+    my $signed = @_ ? shift : 0;
+    my $params = @_ ? shift : {};
 
-    my $url  = $self->{base_url};
-    my $mech = $self->{mech};
-
-    my $query_string = join '&', map { "$_=$params->{$_}" } keys %$params;
-    if ($signed) {
-        $query_string .= "&" if ($query_string);
-        $query_string .= "timestamp=" . int(time * 1000);
-        my $signature = hmac_sha256_hex($query_string, $self->{secret});
-        $query_string .= "&signature=$signature";
-    }
-
-    $url .= "/$path";
-    $url .= "?$query_string" if ($query_string);
-    $log->debug($url);
-
-    return $self->_handle_response($mech->get($url));
+    return $self->_send_request('GET', $path, $signed, $params);
 }
 
 # Send POST request to Binance Public Rest API
-# For POST, PUT, and DELETE endpoints, the parameters will be sent in the request body 
-# with content type application/x-www-form-urlencoded
-sub _post_endpoint ($;$) {
+sub _post ($;$$) {
     my $self   = shift;
     my $path   = shift;
-    my $signed = shift || 0;
-    my $params = shift || {};
+    my $signed = @_ ? shift : 0;
+    my $params = @_ ? shift : {};
 
-#    return if (!$GO->{IN}->{run});
+    return $self->_send_request('POST', $path, $signed, $params);
+}
 
+# Send DELETE request to Binance Public Rest API
+sub _delete ($;$$) {
+    my $self   = shift;
+    my $path   = shift;
+    my $signed = @_ ? shift : 1;
+    my $params = @_ ? shift : {};
+
+    return $self->_send_request('DELETE', $path, $signed, $params);
+}
+
+# Send PUT request to Binance Public Rest API
+sub _put ($;$$) {
+    my $self   = shift;
+    my $path   = shift;
+    my $signed = @_ ? shift : 0;
+    my $params = @_ ? shift : {};
+
+    return $self->_send_request('PUT', $path, $signed, $params);
+}
+
+# Send GET/POST/PUT/DELETE request to Binance Public Rest API
+# For GET and DELETE endpoints, parameters will be sent as a query string
+# For POST and PUT endpoints, the parameters will be sent in the request body 
+# with content type application/x-www-form-urlencoded
+sub _send_request ($$;$$) {
+    my $self   = shift;
+    my $type   = shift;     # request type: GET, POST, PUT, or DELETE
+    my $path   = shift;
+    my $signed = @_ ? shift : 1;
+    my $params = @_ ? shift : {};
+
+    return if (!$GO->{IN}->{run} and $type ne 'GET');
+    
     my $url  = $self->{base_url};
     my $mech = $self->{mech};
 
+    # ordered associative arrays for Perl
+    # preserve the order in which the hash elements were added
+    tie %$params, 'Tie::IxHash', %$params;
+
+    $params->{timestamp} = int(time * 1000) if ($signed);
     my $query_string = join '&', map { "$_=$params->{$_}" } keys %$params;
     if ($signed) {
-        $query_string .= "&" if ($query_string);
-        $query_string .= "timestamp=" . int(time * 1000);
         my $signature = hmac_sha256_hex($query_string, $self->{secret});
         $query_string .= "&signature=$signature";
+        $params->{signature} = $signature;
     }
 
     $url .= "/$path";
+    $url .= "?$query_string" if (($type eq 'GET' || $type eq 'DELETE') && $query_string);
     $log->debug("$url?$query_string");
+#    $log->debug(Dumper $params);
 
-    return $self->_handle_response($mech->post($url, $params));
+    my $response;
+    if ($type eq 'GET') {
+        $response = $mech->get($url);
+    } elsif ($type eq 'POST') {
+        $response = $mech->post($url, $params);
+    } elsif ($type eq 'DELETE') {
+        $response = $mech->delete($url);
+    } elsif ($type eq 'PUT') {
+        $response = $mech->put($url, $params);
+    }
+
+    return $self->_handle_response($response);
 }
 
 sub _handle_response {
