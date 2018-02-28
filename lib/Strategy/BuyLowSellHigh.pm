@@ -273,7 +273,6 @@ sub trade ($;$) {
             foreach my $o (@{ $orders->{$market} }) {
                 $log->info("Cancel order $o->{order_id}");
                 my $rs = $exchange->cancelOrder($o->{order_id}, $market);
-                $log->info(Dumper $rs) if $rs;
             }
         }
 
