@@ -75,14 +75,16 @@ sub getAnalysis ($$) {
             price        => 0,
             amount       => 0,
             sum          => 0,
-            sum_with_fee => 0,
         },
-        amount_rest => 0,
-        profit_lost => 0,
-        take_profit => get_config_value('TakeProfit', $market),
-        ROI         => get_config_value('ROI', $market),
-        fees        => $exchange->getFees(),
-        precisions  => $exchange->getPrecision($market),
+        amount_rest      => 0,
+        break_even_price => 0,
+        profit_lost      => 0,
+        take_profit      => get_config_value('TakeProfit', $market),
+        ROI              => get_config_value('ROI', $market),
+        price_step       => get_config_value('PriceStep', $market),
+        amount_step      => get_config_value('AmountStep', $market),
+        fees             => $exchange->getFees(),
+        precisions       => $exchange->getPrecision($market),
     };
 
     foreach (@$trades) {
@@ -92,7 +94,6 @@ sub getAnalysis ($$) {
         } elsif ($_->{type} eq 'sell') {
             $analysis->{sell}->{amount} += $_->{amount};
             $analysis->{sell}->{sum} += $_->{amount} * $_->{price} * (1 - $_->{fee});
-            $analysis->{sell}->{sum_with_fee} += $_->{amount} * $_->{price};
         }
     }
 
@@ -104,6 +105,7 @@ sub getAnalysis ($$) {
     }
     $analysis->{amount_rest} = $analysis->{buy}->{amount} - $analysis->{sell}->{amount};
     $analysis->{profit_lost} = $analysis->{sell}->{sum} - $analysis->{buy}->{sum};
+    $analysis->{break_even_price} = $analysis->{profit_lost} * -1 / $analysis->{amount_rest};
 
     return $analysis;
 }
@@ -124,8 +126,8 @@ sub calculateSell {
 
     my $new_sell;
 
-    $new_sell->{price} = $buy_price * (1 + $take_profit);
-    $new_sell->{sum} = ($buy_sum * (1 + $ROI) - $sell_sum)  / (1 - $analysis->{fees}->{maker});
+    $new_sell->{price} = $analysis->{break_even_price} * (1 + $take_profit);
+    $new_sell->{sum} = ($buy_sum - $sell_sum) * (1 + $ROI)  / (1 - $analysis->{fees}->{maker});
     $new_sell->{amount} = sprintf("%.${precision_amount}f", $new_sell->{sum} / $new_sell->{price});
     $new_sell->{price} = sprintf("%.${precision_price}f", $new_sell->{price});
 
@@ -162,8 +164,8 @@ sub calculateBuy ($$$) {
 
     # Сalculate array of buy orders
     my @buys;
-    my $price_step = get_config_value('PriceStep', $market);
-    my $amount_step = get_config_value('AmountStep', $market);
+    my $price_step = $analysis->{price_step};
+    my $amount_step = $analysis->{amount_step};
     my $max_steps = int(50/($price_step*100));
     my $precision_price  = $analysis->{precisions}->{price};
     my $precision_amount = $analysis->{precisions}->{amount};
@@ -221,16 +223,17 @@ sub trade ($;$) {
 
         next unless scalar @trades;
 
-        print '-' x length($market) . "\n$market\n" . '-' x length($market) . "\n";
-
         my $analysis = $self->getAnalysis($market, \@trades, $exchange);
         $log->debug(Dumper $analysis);
+
+        my $h = sprintf("%s %d%% / %d%%", $market, $analysis->{price_step} * 100, $analysis->{amount_step} * 100);
+        print '-' x length($h) . "\n$h\n" .  '-' x length($h) . "\n";
 
         my $new_sell;
         if ($analysis->{profit_lost} < 0) {
             # Get parameters for new sell order (Price, Amount and Sum)
             $new_sell = $self->calculateSell($analysis);
-            $log->debug(Dumper $new_sell);
+            $log->debug("New Sell: " . Dumper $new_sell);
 
             # Step 1: Cancel old sell order if exist and create new one if not exist
             my $market_orders = $orders->{$market};
@@ -283,13 +286,13 @@ sub trade ($;$) {
         }
         if ($analysis->{sell}->{sum}) {
             printf("Total Sell (Price Amount Sum): %.8f, %.8f, %.8f\n",
-                $analysis->{sell}->{price}, $analysis->{sell}->{amount}, $analysis->{sell}->{sum_with_fee});
+                $analysis->{sell}->{price}, $analysis->{sell}->{amount}, $analysis->{sell}->{sum});
         }
         
         my $msg = ($analysis->{profit_lost} > 0) ? 'You have earned' : 'Amount Rest';
-        printf("Take Profit: %d%%, ROI: %d%%, $msg: %.8f, Profit/Lost: %.8f\n\n", 
+        printf("Take Profit: %d%%, ROI: %d%%, Break-Even Price: %.8f, $msg: %.8f, Profit/Lost: %.8f\n\n", 
             $analysis->{take_profit} * 100, $analysis->{ROI} * 100,
-            $analysis->{amount_rest}, $analysis->{profit_lost}
+            $analysis->{break_even_price}, $analysis->{amount_rest}, $analysis->{profit_lost}
         );
 
         if ($analysis->{profit_lost} < 0) {
