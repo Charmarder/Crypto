@@ -57,24 +57,29 @@ sub calculateOrderList ($;$) {
 }
 
 
-# Calculate Buy/Sell Average Price, Total Amount and Toral Sum, as well Amount Rest and Profit/Lost
-sub getAnalysis ($$) {
+# It analyses market trades and 
+# calculate Buy/Sell Average Price, Total Amount and Toral Sum, 
+# as well Amount Rest, Profit/Lost, Break-Ever Price and other
+sub getAnalysis ($$$$) {
     my $self     = shift;
     my $market   = shift;
-    my $trades   = shift;
     my $exchange = shift;
+    my $trades   = shift;
+    my $orders   = shift;
 
     my $analysis = {
-        market => $market,
-        buy    => {
+        market    => $market,
+        side      => (@$trades) ? $trades->[0]->{type} : $orders->[0]->{type},    # buy|sell
+        status    => '',  # new|trading|completed
+        buy       => {
             price  => 0,
             amount => 0,
             sum    => 0,
         },
         sell => {
-            price        => 0,
-            amount       => 0,
-            sum          => 0,
+            price  => 0,
+            amount => 0,
+            sum    => 0,
         },
         amount_rest      => 0,
         break_even_price => 0,
@@ -87,6 +92,8 @@ sub getAnalysis ($$) {
         precisions       => $exchange->getPrecision($market),
     };
 
+#    $log->info(Dumper $trades);
+
     foreach (@$trades) {
         if ($_->{type} eq 'buy') {
             $analysis->{buy}->{amount} += $_->{amount} * (1 - $_->{fee});
@@ -96,22 +103,38 @@ sub getAnalysis ($$) {
             $analysis->{sell}->{sum} += $_->{amount} * $_->{price} * (1 - $_->{fee});
         }
     }
-
     if ($analysis->{buy}->{sum}) {
         $analysis->{buy}->{price} = $analysis->{buy}->{sum} / $analysis->{buy}->{amount};
     }
     if ($analysis->{sell}->{sum}) {
         $analysis->{sell}->{price} = $analysis->{sell}->{sum} / $analysis->{sell}->{amount};
     }
+
     $analysis->{amount_rest} = $analysis->{buy}->{amount} - $analysis->{sell}->{amount};
     $analysis->{profit_lost} = $analysis->{sell}->{sum} - $analysis->{buy}->{sum};
-    $analysis->{break_even_price} = $analysis->{profit_lost} * -1 / $analysis->{amount_rest};
+
+    # Set status of trading to 'new' (not started), 'trading' (in process of trade) or 'competed' (got profit)
+    $analysis->{status} = (@$trades) ? 
+        ($analysis->{profit_lost} < 0 || $analysis->{amount_rest} < 0 ? 'trading' : 'completed') : 'new';
+
+    # Set 'side' depending values
+    if ($analysis->{side} eq 'buy') {
+        if ($analysis->{profit_lost} < 0) {
+            $analysis->{break_even_price} = $analysis->{profit_lost} * -1
+                / (1 - $analysis->{fees}->{maker}) / $analysis->{amount_rest};
+        }
+    } else {
+        if ($analysis->{amount_rest} < 0) {
+            $analysis->{break_even_price} = $analysis->{profit_lost}
+                / ($analysis->{amount_rest} * -1 / (1 - $analysis->{fees}->{maker}));
+        }
+    }
 
     return $analysis;
 }
 
-# Return parameters for new sell order
-sub calculateSell {
+# Return parameters for new Take Profit (sell/buy) order
+sub getTakeProfit {
     my $self      = shift;
     my $analysis  = shift;
 
@@ -124,81 +147,97 @@ sub calculateSell {
     my $precision_price  = $analysis->{precisions}->{price};
     my $precision_amount = $analysis->{precisions}->{amount};
 
-    my $new_sell;
+    my $new_order;
 
-    $new_sell->{price} = $analysis->{break_even_price} * (1 + $take_profit);
-    $new_sell->{sum} = ($buy_sum - $sell_sum) * (1 + $ROI)  / (1 - $analysis->{fees}->{maker});
-    $new_sell->{amount} = sprintf("%.${precision_amount}f", $new_sell->{sum} / $new_sell->{price});
-    $new_sell->{price} = sprintf("%.${precision_price}f", $new_sell->{price});
+    $new_order->{price} = $analysis->{break_even_price} * (1 + $take_profit);
+    $new_order->{sum} = ($buy_sum - $sell_sum) * (1 + $ROI)  / (1 - $analysis->{fees}->{maker});
+    $new_order->{amount} = sprintf("%.${precision_amount}f", $new_order->{sum} / $new_order->{price});
+    $new_order->{price} = sprintf("%.${precision_price}f", $new_order->{price});
+    $new_order->{type} = $analysis->{side} eq 'buy' ? 'sell' : 'buy';
 
-    return $new_sell;
+    return $new_order;
 }
 
-# Return parameters for new buy orders
-sub calculateBuy ($$$) {
+# Return array of parameters for new Step (sell/buy) orders
+sub getStepOrders ($$$) {
     my $self     = shift;
     my $analysis = shift;
     my $trades   = shift;
     my $orders   = shift;
 
-    my $market = $analysis->{market};
+    my $market     = $analysis->{market};
+    my $side       = $analysis->{side};
 
-    my $buy_orders = [grep $_->{type} eq 'buy', @$orders];
-    my $new_buy;
+    my $max_orders = get_config_value('MaxStepOrders', $market);
+    my $step_orders = [ grep $_->{type} eq $side, @$orders ];
 
-    return [] if (@$buy_orders > 2);
+    return [] if (@$step_orders >= $max_orders);
 
     # Find Start Price and Start Amount
     my ($start_price, $start_amount);
-    foreach (sort {$a->{date} cmp $b->{date}} grep $_->{type} eq 'buy', @$trades) {
-        if (! defined $start_price) {
-            $start_price = $_->{price};
-            $start_amount = $_->{amount};
-        } elsif ($start_price == $_->{price}) {
-            $start_amount += $_->{amount};
-        } else {
-            last;
+    if (@$trades) {
+        foreach (sort {$a->{date} cmp $b->{date}} grep $_->{type} eq $side, @$trades) {
+            if (! defined $start_price) {
+                $start_price = $_->{price};
+                $start_amount = $_->{amount};
+            } elsif ($start_price == $_->{price}) {
+                $start_amount += $_->{amount};
+            } else {
+                last;
+            }
         }
+    } else {
+        my $o = [sort {$a->{date} cmp $b->{date}} grep $_->{type} eq $side, @$orders]->[0];
+        $start_price = $o->{price};
+        $start_amount = $o->{amount};
     }
     $log->debug("Start Price and Amount: $start_price, $start_amount");
 
-    # Сalculate array of buy orders
-    my @buys;
+    # Сalculate array of Step orders
+    my @steps;
     my $price_step = $analysis->{price_step};
     my $amount_step = $analysis->{amount_step};
-    my $max_steps = int(50/($price_step*100));
+    my $max_steps = int(50 / ($price_step * 100));
     my $precision_price  = $analysis->{precisions}->{price};
     my $precision_amount = $analysis->{precisions}->{amount};
     for (my $i = 0; $i < $max_steps; $i++) {
-        my $price = $start_price * (1 -  $price_step * $i);
+        my $price = $start_price * (1 -  $price_step * $i * ($side eq 'buy' ? 1 : -1));
         my $amount = $start_amount * (1 + $amount_step) ** $i;
-        push @buys, {
+        push @steps, {
             market => $market,
             price  => sprintf("%.${precision_price}f", $price),
             amount => sprintf("%.${precision_amount}f", $amount),
         };
     }
 
-    # Find last buy from history or orders
+    # Find last Step order from orders or trades
     my $last_order;
-    if (@$buy_orders) {
-        $last_order = [sort {$a->{price} cmp $b->{price}} @$buy_orders]->[0];
+    if (@$step_orders) {
+        if ($side eq 'buy') {
+            $last_order = [sort {$a->{price} cmp $b->{price}} @$step_orders]->[0];
+        } else {
+            $last_order = [sort {$b->{price} cmp $a->{price}} @$step_orders]->[0];
+        }
     } else {
-        $last_order  = [sort {$b->{date} cmp $a->{date}} grep $_->{type} eq 'buy', @$trades]->[0];
+        $last_order  = [sort {$b->{date} cmp $a->{date}} grep $_->{type} eq $side, @$trades]->[0];
     }
     $log->debug(Dumper $last_order);
 
-    # Grep not created orders
-    my $not_created = [grep $_->{price} < $last_order->{price}, @buys];
+    # Grep not created Step orders
+    my $not_created;
+    if ($side eq 'buy') {
+        $not_created = [grep $_->{price} < $last_order->{price}, @steps];
+    } else {
+        $not_created = [grep $_->{price} > $last_order->{price}, @steps];
+    }
+#    $log->info(Dumper $not_created);
 
-    my $max_orders = get_config_value('MaxBuyOrders', $market);
-    my $num = ($max_orders - @$buy_orders > @$not_created) ? @$not_created - 1 : $max_orders - 1 - @$buy_orders;
-    @$new_buy = (grep $_->{price} < $last_order->{price}, @buys)[0..$num];
-
-    return $new_buy;
+    # Return not more then MaxStepOrders
+    my $num = ($max_orders - @$step_orders > @$not_created ? @$not_created : $max_orders - @$step_orders) - 1;
+    return [ (@$not_created)[ 0 .. $num ] ];
 }
 
-# Analysis and trade
+# Main function for automation trading
 sub trade ($;$) {
     my $self     = shift;
     my $exchange = shift;
@@ -221,83 +260,93 @@ sub trade ($;$) {
         my $start_date = get_config_value($market, $exchange->name);
         my @trades = grep $_->{date} ge $start_date, map { $_->{market} = $market; $_  } @{ $trades->{$market} };
 
-        next unless scalar @trades;
+#        next unless scalar @trades;
 
-        my $analysis = $self->getAnalysis($market, \@trades, $exchange);
+        my $market_orders = $orders->{$market};
+
+        my $analysis = $self->getAnalysis($market, $exchange, \@trades, $market_orders);
         $log->debug(Dumper $analysis);
 
-        my $h = sprintf("%s %d%% / %d%%", $market, $analysis->{price_step} * 100, $analysis->{amount_step} * 100);
+        # Print market header
+        my $h = sprintf("%s %d%% / %d%% (%s)",
+            $market, $analysis->{price_step} * 100, $analysis->{amount_step} * 100, $analysis->{side});
         print '-' x length($h) . "\n$h\n" .  '-' x length($h) . "\n";
 
-        my $new_sell;
-        if ($analysis->{profit_lost} < 0) {
-            # Get parameters for new sell order (Price, Amount and Sum)
-            $new_sell = $self->calculateSell($analysis);
-            $log->debug("New Sell: " . Dumper $new_sell);
+        my $new_take_profit;
+        if ($analysis->{status} eq 'trading') {
+            # Get parameters (Price, Amount and Sum) for new Take Profit order
+            $new_take_profit = $self->getTakeProfit($analysis);
+            $log->debug("New Take Profit order: " . Dumper $new_take_profit);
 
-            # Step 1: Cancel old sell order if exist and create new one if not exist
-            my $market_orders = $orders->{$market};
-            my $new_amount = $new_sell->{amount};
-            if (! grep $_->{type} eq 'sell' && $_->{amount} == $new_sell->{amount}, @$market_orders) {
-                # Be sure that there is no more then one sell order
-                my @sell_orders = grep $_->{type} eq 'sell', @$market_orders;
-                if (@sell_orders > 1) {
-                    $log->warn('Cannot do anythig, there are more then one sell orders.');
-                } else {
-                    if (@sell_orders) {
-                        # Cancel old sell order
-                        my $o = $sell_orders[0];
-                        $log->info("Cancel old Sell order $o->{order_id}");
-                        $exchange->cancelOrder($o->{order_id}, $market);
-                    }
-
-                    # Create new Sell order
-                    $log->info("Create new Sell order: $new_sell->{price} $new_sell->{amount}");
-                    $exchange->createOrder('sell', 
-                        {market => $market, price => $new_sell->{price}, amount => $new_sell->{amount}});
+            # Cancel old Take Profit order if exist and create new one if not exist
+            my $pt_type = $new_take_profit->{type};
+            my @take_profit_orders = grep $_->{type} eq $pt_type, @$market_orders;
+            if (@take_profit_orders > 1) {
+                # Be sure that there is no more then one Take Profit order
+                $log->warn("Cannot do anythig, there are more then one Take Profit ($pt_type) orders.");
+            } elsif (! grep $_->{amount} == $new_take_profit->{amount}, @take_profit_orders) {
+                # Cancel old Take Profit order
+                if (@take_profit_orders) {
+                    my $o = $take_profit_orders[0];
+                    $log->info("Cancel old Take Profit order $o->{order_id}");
+                    $exchange->cancelOrder($o->{order_id}, $market);
                 }
+
+                # Create new Take Profit order
+                $log->info("Create new Take Profit order: $new_take_profit->{price} $new_take_profit->{amount}");
+                $exchange->createOrder($new_take_profit->{type}, 
+                    {market => $market, price => $new_take_profit->{price}, amount => $new_take_profit->{amount}});
             } else {
-                $log->debug("Nothing to do, sell order with amount $new_sell->{amount} already exist.");
+                $log->debug("Nothing to do, $pt_type order with amount $new_take_profit->{amount} already exist.");
             }
-
-            # Get parameters for new buy order (Price, Amount and Sum)
-            my $new_buy = $self->calculateBuy($analysis, \@trades, $market_orders);
-            $log->debug(Dumper $new_buy);
-
-            # Step 2: Create new buy orders
-            if (@$new_buy) {
-                foreach (@$new_buy) {
-                    $log->info("Create new Buy order: $_->{price} $_->{amount}");
-                    $exchange->createOrder('buy', {market => $market, price => $_->{price}, amount => $_->{amount}});
-                }
-            }
-        } else {
-            # Cances all orders
-            foreach my $o (@{ $orders->{$market} }) {
+        } elsif ($analysis->{status} eq 'completed') {
+            # Cances all Step orders
+            my @step_orders = grep $_->{type} eq $analysis->{side}, @$market_orders;
+            foreach my $o (@step_orders) {
                 $log->info("Cancel order $o->{order_id}");
                 my $rs = $exchange->cancelOrder($o->{order_id}, $market);
             }
         }
 
+        # Create Step orders if trading status is not completed
+        if ($analysis->{status} ne 'completed') {
+            # Get parameters (Price, Amount and Sum) for new Step orders
+            my $new_steps = $self->getStepOrders($analysis, \@trades, $market_orders);
+            $log->debug("New Step orders: " . Dumper $new_steps);
+
+            # Create new Step orders
+            if (@$new_steps) {
+                foreach (@$new_steps) {
+                    $log->info("Create new Step ($analysis->{side}) order: $_->{price} $_->{amount}");
+                    $exchange->createOrder($analysis->{side},
+                        {market => $market, price => $_->{price}, amount => $_->{amount}});
+                }
+            }
+        }
 
         if ($analysis->{buy}->{sum}) {
-            printf("Total Buy (Price Amount Sum): %.8f, %.8f, %.8f\n", 
+            printf("Total Buy (Price, Amount, Sum): %.8f, %.8f, %.8f\n", 
                 $analysis->{buy}->{price}, $analysis->{buy}->{amount}, $analysis->{buy}->{sum});
         }
         if ($analysis->{sell}->{sum}) {
-            printf("Total Sell (Price Amount Sum): %.8f, %.8f, %.8f\n",
+            printf("Total Sell (Price, Amount, Sum): %.8f, %.8f, %.8f\n",
                 $analysis->{sell}->{price}, $analysis->{sell}->{amount}, $analysis->{sell}->{sum});
         }
         
-        my $msg = ($analysis->{profit_lost} > 0) ? 'You have earned' : 'Amount Rest';
-        printf("Take Profit: %d%%, ROI: %d%%, Break-Even Price: %.8f, $msg: %.8f, Profit/Lost: %.8f\n\n", 
-            $analysis->{take_profit} * 100, $analysis->{ROI} * 100,
-            $analysis->{break_even_price}, $analysis->{amount_rest}, $analysis->{profit_lost}
-        );
-
-        if ($analysis->{profit_lost} < 0) {
-            printf("Amount will be earned:\t%.8f\n\n", $analysis->{amount_rest} - $new_sell->{amount});
+        printf("\nTake Profit: %d%%, ROI: %d%%", $analysis->{take_profit} * 100, $analysis->{ROI} * 100);
+        if ($analysis->{status} eq 'trading') {
+            printf(", Break-Even Price: %.8f, Amount Rest: %.8f, Profit/Lost: %.8f\n", 
+                $analysis->{break_even_price}, $analysis->{amount_rest}, $analysis->{profit_lost}
+            );
+            printf("Amount will be earned:\t%.8f", $analysis->{amount_rest} - $new_take_profit->{amount});
+        } elsif ($analysis->{status} eq 'completed') {
+            printf(", Earned: %.8f (%.2f%%), Profit: %.8f (%.2f%%)", $analysis->{amount_rest},
+                $analysis->{amount_rest} * $analysis->{sell}->{price} * (1 - $analysis->{fees}->{maker})
+                / $analysis->{buy}->{sum} * 100,
+                $analysis->{profit_lost}, $analysis->{profit_lost} / $analysis->{buy}->{sum} * 100
+            );
         }
+        print "\n\n";
 
         # Get open orders for market and print
         my $orders = $exchange->getOpenOrders($market);
@@ -333,7 +382,7 @@ sub trade ($;$) {
                     $_->{tradeID},
                 ];
         }
-        $self->print_table($header, $data);
+        $self->print_table($header, $data) if (scalar @$data);
     }
 }
 
