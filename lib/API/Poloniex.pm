@@ -141,7 +141,7 @@ sub getTradeHistory ($) {
     foreach my $market (keys %$rs) {
         foreach (@{ $rs->{$market} }) {
             my $commission = $_->{type} eq 'buy' ? $_->{amount} * $_->{fee} : $_->{total} * $_->{fee};
-            my ($commission_asset) = ($market =~ /_(\w+)$/);
+            my ($commission_asset) = $_->{type} eq 'buy' ? ($market =~ /_(\w+)$/) : ($market =~ /^(\w+)_/);
             $_->{fee_all} = sprintf("%.8f %s (%.2f)", $commission, $commission_asset, $_->{fee} * 100);
             $_->{price} = $_->{rate};
             delete $_->{rate};
