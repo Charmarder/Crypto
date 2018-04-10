@@ -219,7 +219,11 @@ sub getStepOrders ($$$) {
             $last_order = [sort {$b->{price} cmp $a->{price}} @$step_orders]->[0];
         }
     } else {
-        $last_order  = [sort {$b->{date} cmp $a->{date}} grep $_->{type} eq $side, @$trades]->[0];
+        if ($side eq 'buy') {
+            $last_order  = [sort {$a->{price} cmp $b->{price}} grep $_->{type} eq $side, @$trades]->[0];
+        } else {
+            $last_order  = [sort {$b->{price} cmp $a->{price}} grep $_->{type} eq $side, @$trades]->[0];
+        }
     }
     $log->debug(Dumper $last_order);
 
