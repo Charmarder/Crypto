@@ -69,7 +69,7 @@ sub getAnalysis ($$$$) {
 
     my $analysis = {
         market    => $market,
-        side      => (@$trades) ? $trades->[0]->{type} : $orders->[0]->{type},    # buy|sell
+        side      => (@$trades) ? $trades->[$#$trades]->{type} : $orders->[$#$orders]->{type},    # buy|sell
         status    => '',  # new|trading|completed
         buy       => {
             price  => 0,
