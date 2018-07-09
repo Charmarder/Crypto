@@ -149,7 +149,7 @@ sub getTakeProfit {
 
     my $new_order;
 
-    $new_order->{price} = $analysis->{break_even_price} * (1 + $take_profit);
+    $new_order->{price} = $analysis->{break_even_price} * (1 - $analysis->{fees}->{maker}) * (1 + $take_profit);
     $new_order->{sum} = ($buy_sum - $sell_sum) * (1 + $ROI)  / (1 - $analysis->{fees}->{maker});
     $new_order->{amount} = sprintf("%.${precision_amount}f", $new_order->{sum} / $new_order->{price});
     $new_order->{price} = sprintf("%.${precision_price}f", $new_order->{price});
